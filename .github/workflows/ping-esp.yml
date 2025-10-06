@@ -1,68 +1,134 @@
-name: Irrigazione - Pull metrics
+name: ESP32 pull
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # ogni 5 minuti
   workflow_dispatch:
+    inputs:
+      override_base:
+        description: "Override base URL (opzionale, es: http://79.21.55.245:1234)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "*/5 * * * *" # ogni 5 minuti
+
+permissions:
+  contents: write
+
+concurrency:
+  group: esp32-pull
+  cancel-in-progress: true
 
 jobs:
   pull:
     runs-on: ubuntu-latest
     env:
-      ESP_BASE: ${{ secrets.ESP_BASE }}
+      # Se l'input manuale è presente lo usa, altrimenti prende il secret
+      ESP_BASE: ${{ inputs.override_base != '' && inputs.override_base || secrets.ESP_BASE }}
       ESP_USER: ${{ secrets.ESP_USER }}
       ESP_PASS: ${{ secrets.ESP_PASS }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ping (verbose)
-        id: ping
+      - name: Ensure tools
         run: |
           set -euxo pipefail
-          url="$ESP_BASE/api/ping"
-          auth=()
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Prepare BASE (strip trailing /)
+        id: prep
+        run: |
+          set -euo pipefail
+          BASE="${ESP_BASE%/}"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo "Using BASE=$BASE"
+
+      - name: Ping (verbose)
+        run: |
+          set -euxo pipefail
+          url="$BASE/api/ping"
           if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
             auth=(-u "$ESP_USER:$ESP_PASS")
+          else
+            auth=()
           fi
           echo "→ GET $url"
-          # verbose per debug; non fallire qui, solo raccogli il codice
-          code=$(curl -v --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
-          echo "HTTP_CODE=$code"
-          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
-            echo "::error::Ping failed with HTTP $code"
+          http_code=$(curl -sS -o ping.txt -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
+          echo "HTTP_CODE=$http_code"
+          echo "Body:"; cat ping.txt || true
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::Ping failed with HTTP $http_code"
             exit 1
           fi
 
-      - name: Scarica /api/state
+      - name: Fetch /api/state
         run: |
           set -euxo pipefail
-          auth=()
+          url="$BASE/api/state"
           if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
             auth=(-u "$ESP_USER:$ESP_PASS")
+          else
+            auth=()
           fi
-          curl -sS --connect-timeout 10 --max-time 20 "${auth[@]}" "$ESP_BASE/api/state" -o state.json
-          jq 'keys' state.json || true   # stampa le chiavi disponibili (per debug)
+          curl -sS --connect-timeout 10 --max-time 30 "${auth[@]}" "$url" -o state.json
+          # Validazione base
+          jq type state.json
+          ts=$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p states/raw
+          cp state.json "states/raw/state_$ts.json"
 
-      - name: Appendi riga CSV (timestamp + alcune metriche)
+      - name: Append CSV
         run: |
-          python3 - << 'PY'
-          import json, time, os
-          j=json.load(open('state.json'))
-          fields=["t_air_ds","t_soil_ds","soil1","soil2","bme_t","bme_rh","bme_voc","bme_co2eq","vpv","ppv","vbat"]
-          ts=int(time.time())
-          row=[str(ts)]+[("" if j.get(k) is None else str(j.get(k))) for k in fields]
-          line=",".join(row)+"\n"
-          fn="metrics.csv"
-          # header se file nuovo
-          if not os.path.exists(fn):
-            open(fn,"w").write("ts,"+",".join(fields)+"\n")
-          open(fn,"a").write(line)
-          print(line.strip())
-          PY
+          set -euo pipefail
+          mkdir -p states
+          csv="states/metrics.csv"
+          if [ ! -s "$csv" ]; then
+            echo "ts,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
+          fi
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -r --arg ts "$ts" '
+            [
+              $ts,
+              (.soil1//null),
+              (.soil2//null),
+              (.sens_suolo_anal1//null),
+              (.sens_suolo_anal2//null),
+              (.bme_t//null),
+              (.bme_rh//null),
+              (.bme_p//null),
+              (.bme_iaq//null),
+              (.bme_static_iaq//null),
+              (.bme_co2eq//null),
+              (.bme_voc//null),
+              (.bme_gas_pct//null),
+              (.bme_gas_raw//null),
+              (.vbat//null),
+              (.vpv//null),
+              (.ppv//null),
+              (.flow_lph//null),
+              (.flow_total//null),
+              (.valve1//null),
+              (.valve2//null),
+              (.rtc_epoch_esp32//null)
+            ] | @csv
+          ' state.json >> "$csv"
 
-      - name: Commit CSV
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Commit & push
+        run: |
+          set -euxo pipefail
+          git config user.name  "gh-actions"
+          git config user.email "actions@github.com"
+          git add states/metrics.csv states/raw/*.json
+          git commit -m "ESP32 pull: $(date -u +%F' '%T) UTC" || { echo "Nothing to commit"; exit 0; }
+          git push
+
+      - name: Upload artifacts (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          commit_message: "metrics: update"
-          file_pattern: metrics.csv
+          name: esp32-state-${{ github.run_id }}
+          path: |
+            state.json
+            states/metrics.csv
+            states/raw/*.json
