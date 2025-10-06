@@ -1,80 +1,70 @@
-name: Ping ESP32 (deep diag)
+name: Ping ESP32
+
 on:
   workflow_dispatch:
 
 jobs:
-  diag:
+  ping:
     runs-on: ubuntu-latest
-    steps:
-      - name: Show inputs
-        env:
-          ESP_BASE: ${{ secrets.ESP_BASE }}
-          ESP_USER: ${{ secrets.ESP_USER }}
-          ESP_PASS: ${{ secrets.ESP_PASS }}
-          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+    defaults:
+      run:
         shell: bash
-        run: |
-          echo "ESP_BASE: ${ESP_BASE:-<EMPTY>}"
-          if [ -n "${ESP_USER:-}" ]; then echo "ESP_USER set? yes"; else echo "ESP_USER set? no"; fi
-          if [ -n "${ESP_PASS:-}" ]; then echo "ESP_PASS set? yes"; else echo "ESP_PASS set? no"; fi
-          echo "ESP_INSECURE: ${ESP_INSECURE:-false}"
 
-      - name: DNS/Port check + curl verbose
+    steps:
+      - name: Sanity
+        run: |
+          set -x
+          bash --version
+          which curl
+
+      - name: Check secrets
+        run: |
+          test -n "${{ secrets.ESP_BASE }}" || { echo "❌ ESP_BASE mancante"; exit 1; }
+
+      - name: Ping endpoint
         env:
-          ESP_BASE: ${{ secrets.ESP_BASE }}
-          ESP_USER: ${{ secrets.ESP_USER }}
-          ESP_PASS: ${{ secrets.ESP_PASS }}
-          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
-        shell: bash
+          ESP_BASE:     ${{ secrets.ESP_BASE }}      # es. http://miohost.dynu.net:8081
+          ESP_USER:     ${{ secrets.ESP_USER }}      # opzionale (Basic Auth)
+          ESP_PASS:     ${{ secrets.ESP_PASS }}      # opzionale
+          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}  # "true" se https con cert non valido
         run: |
           set -euo pipefail
-          [ -n "${ESP_BASE:-}" ] || { echo "❌ Secret ESP_BASE mancante"; exit 1; }
 
-          # Parse URL (scheme, host, port, path) in puro Bash
-          re='^(https?)://([^/:]+)(:([0-9]+))?(/.*)?$'
-          if [[ "$ESP_BASE" =~ $re ]]; then
-            SCHEME="${BASH_REMATCH[1]}"
-            HOST="${BASH_REMATCH[2]}"
-            PORT="${BASH_REMATCH[4]}"
-            PATH="${BASH_REMATCH[5]}"
-          else
-            echo "❌ ESP_BASE non valido: $ESP_BASE"; exit 1
+          BASE="$ESP_BASE"
+          [[ "$BASE" =~ ^https?:// ]] || { echo "ESP_BASE deve iniziare con http:// o https://"; exit 1; }
+
+          # Opzioni curl (niente array: massima compatibilità)
+          OPTS="-sS -L --connect-timeout 8 --max-time 20 --retry 2 --retry-connrefused"
+          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then
+            OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"
           fi
-          if [ -z "${PORT:-}" ]; then
-            if [ "$SCHEME" = "https" ]; then PORT=443; else PORT=80; fi
+          if [[ "$BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then
+            OPTS="$OPTS -k"
           fi
-          PATH="${PATH%/}"
-          BASE="${SCHEME}://${HOST}:${PORT}${PATH}"
 
-          echo "Resolved: $BASE"
-          echo "DNS:"
-          getent ahostsv4 "$HOST" || true
+          echo "# GET $BASE/api/ping"
+          code=$(bash -lc "curl $OPTS -o /dev/null -w '%{http_code}' \"$BASE/api/ping?t=\$(date +%s)\"")
+          echo "HTTP $code"
+          [[ "$code" == 2* ]] || { echo "❌ ping fallito"; exit 1; }
 
-          echo "TCP connect test:"
-          timeout 5 bash -lc "cat < /dev/null > /dev/tcp/$HOST/$PORT" \
-            && echo "✅ TCP OK" || echo "❌ TCP FAIL"
+      - name: Scarica /api/state e pubblica artifact
+        if: ${{ always() }}
+        env:
+          ESP_BASE:     ${{ secrets.ESP_BASE }}
+          ESP_USER:     ${{ secrets.ESP_USER }}
+          ESP_PASS:     ${{ secrets.ESP_PASS }}
+          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+        run: |
+          set -e
+          OPTS="-sS -L --connect-timeout 8 --max-time 30"
+          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"; fi
+          if [[ "$ESP_BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then OPTS="$OPTS -k"; fi
+          mkdir -p out
+          bash -lc "curl $OPTS -o out/state.json \"$ESP_BASE/api/state\" || true"
+          ls -l out || true
 
-          AUTH=()
-          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then AUTH=(-u "$ESP_USER:$ESP_PASS"); fi
-          SSL=()
-          if [ "$SCHEME" = "https" ] && [ "${ESP_INSECURE:-}" = "true" ]; then SSL=(-k); fi
-
-          test_path () {
-            local p="$1"
-            echo "---- CURL $BASE$p"
-            curl -v -L -sS "${AUTH[@]}" "${SSL[@]}" \
-                 -o /tmp/body -w "\n<HTTP=%{http_code}>\n" \
-                 "$BASE$p?t=$(date +%s)" || true
-            echo "Body (first 400 bytes):"
-            head -c 400 /tmp/body; echo; echo "----------"
-          }
-
-          test_path /api/ping
-          test_path /api/state
-
-          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" "${SSL[@]}" "$BASE/api/ping?t=$(date +%s)" || true)
-          if [[ "$code" =~ ^2..$ ]]; then
-            echo "✅ OK /api/ping"
-          else
-            echo "❌ HTTP $code su /api/ping"; exit 1
-          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: state-json
+          path: out/state.json
