@@ -4,32 +4,16 @@ on:
   schedule:
     - cron: "*/10 * * * *"   # ogni 10 minuti
   workflow_dispatch:
-    inputs:
-      base_url:
-        description: "Override BASE URL (es: http://host:port)"
-        required: false
-        default: ""
-      user:
-        description: "Basic Auth user (opzionale)"
-        required: false
-        default: ""
-      pass:
-        description: "Basic Auth password (opzionale)"
-        required: false
-        default: ""
 
 permissions:
   contents: write
 
 concurrency:
   group: collect-esp32
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
-  # Ordine di priorità: input manuale > secret/var repo > fallback fisso
-  BASE_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.base_url != '' && github.event.inputs.base_url || vars.ESP_BASE || secrets.ESP_BASE || 'http://79.21.55.245:1234' }}
-  ESP_USER: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.user != '' && github.event.inputs.user || secrets.ESP_USER }}
-  ESP_PASS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pass != '' && github.event.inputs.pass || secrets.ESP_PASS }}
+  BASE_URL: "http://79.21.55.245:1234"   # eventualmente sostituisci con il tuo dominio/DDNS
 
 jobs:
   pull:
@@ -40,63 +24,23 @@ jobs:
 
       - name: Install jq
         run: |
-          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Prepare folders and CSV header
         run: |
-          set -euo pipefail
           mkdir -p states/raw docs
           csv="states/metrics.csv"
           if [ ! -s "$csv" ]; then
-            # HEADER allineato alle colonne che scriviamo più sotto
             echo "timestamp,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
-          fi
-
-      - name: Normalize BASE and check
-        run: |
-          set -euo pipefail
-          BASE="${BASE_URL%/}"
-          if [ -z "$BASE" ]; then
-            echo "::error::BASE_URL non impostata"
-            exit 1
-          fi
-          echo "BASE=$BASE" >> "$GITHUB_ENV"
-          echo "Using BASE=$BASE"
-
-      - name: Ping (verbose)
-        run: |
-          set -euxo pipefail
-          url="$BASE/api/ping"
-          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
-            auth=(-u "$ESP_USER:$ESP_PASS")
-          else
-            auth=()
-          fi
-          echo "→ GET $url"
-          http_code=$(curl -sS -o ping.txt -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
-          echo "HTTP_CODE=$http_code"
-          echo "Body:"; cat ping.txt || true
-          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "::error::Ping failed with HTTP $http_code"
-            exit 1
           fi
 
       - name: Fetch /api/state and append row
         run: |
           set -euo pipefail
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
-            auth=(-u "$ESP_USER:$ESP_PASS")
-          else
-            auth=()
-          fi
-          curl -fsS --connect-timeout 10 --max-time 30 "${auth[@]}" "$BASE/api/state" -o "states/raw/$ts.json"
-          # Valida che sia JSON
-          jq type "states/raw/$ts.json" >/dev/null
+          curl -fsSL "$BASE_URL/api/state" -o "states/raw/$ts.json"
 
-          # Riga CSV (tutte le colonne in ordine come da header)
           jq -r --arg ts "$ts" '
             [
               $ts,
@@ -126,12 +70,12 @@ jobs:
             ] | @csv
           ' "states/raw/$ts.json" >> states/metrics.csv
 
-          # Copia per GitHub Pages (opz.)
           cp states/metrics.csv docs/metrics.csv
+          echo "CSV header attuale:"
+          head -1 docs/metrics.csv || true
 
       - name: Commit & push
         run: |
-          set -euxo pipefail
           if git status --porcelain | grep -q .; then
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
