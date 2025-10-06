@@ -1,0 +1,65 @@
+name: Collect ESP32 state
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # ogni 10 minuti
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-esp32
+  cancel-in-progress: false
+
+env:
+  BASE_URL: "http://79.21.55.245:1234"   # se hai un dominio DYNU, meglio metterlo qui
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Prepare folders and CSV header
+        run: |
+          mkdir -p states/raw docs
+          if [ ! -f states/metrics.csv ]; then
+            echo 'timestamp,soil1,soil2,bme_t,bme_rh,bme_iaq,bme_voc,bme_co2eq,vpv,ppv' > states/metrics.csv
+          fi
+
+      - name: Fetch /api/state and append row
+        run: |
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          curl -fsSL "$BASE_URL/api/state" -o "states/raw/$ts.json"
+          echo -n "$ts," >> states/metrics.csv
+          jq -r '[
+              (.soil1 // "NA"),
+              (.soil2 // "NA"),
+              (.bme_t // "NA"),
+              (.bme_rh // "NA"),
+              (.bme_iaq // "NA"),
+              (.bme_voc // "NA"),
+              (.bme_co2eq // "NA"),
+              (.vpv // "NA"),
+              (.ppv // "NA")
+            ] | @csv' "states/raw/$ts.json" >> states/metrics.csv
+          cp states/metrics.csv docs/metrics.csv
+
+      - name: Commit & push
+        run: |
+          if git status --porcelain | grep -q .; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add states docs
+            git commit -m "update metrics ($(date -u +"%Y-%m-%dT%H:%M:%SZ"))"
+            git push
+          else
+            echo "No changes"
+          fi
