@@ -1,0 +1,40 @@
+name: Ping ESP32 (keep history fresh)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # ogni 5 minuti (tempo in UTC)
+  workflow_dispatch:        # per avviare manualmente dal pulsante "Run workflow"
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /api/state (HTTP/HTTPS)
+        env:
+          ESP_BASE: ${{ secrets.ESP_BASE }}
+          ESP_USER: ${{ secrets.ESP_USER }}
+          ESP_PASS: ${{ secrets.ESP_PASS }}
+          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+        run: |
+          if [ -z "$ESP_BASE" ]; then
+            echo "ESP_BASE non configurato"; exit 1
+          fi
+
+          # Costruisci opzioni curl in base ai secrets disponibili
+          AUTH_OPTS=""
+          if [ -n "$ESP_USER" ] && [ -n "$ESP_PASS" ]; then
+            AUTH_OPTS="-u $ESP_USER:$ESP_PASS"
+          fi
+
+          SSL_OPTS=""
+          if [ "$ESP_INSECURE" = "true" ]; then
+            SSL_OPTS="-k"
+          fi
+
+          # Aggiungo un cache-buster ?t= per evitare caching lato proxy
+          URL="$ESP_BASE/api/state?t=$(date +%s)"
+
+          echo "Chiamo: $URL"
+          # -f: fail su HTTP>=400, -s: silenzioso, -S: mostra errori
+          curl -fsS $AUTH_OPTS $SSL_OPTS "$URL" > /dev/null
+          echo "OK"
