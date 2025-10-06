@@ -1,52 +1,72 @@
-name: Ping ESP32 (diag)
-
+name: Ping ESP32 (deep diag)
 on:
-  workflow_dispatch:  # lo lanci a mano
-  # schedule:
-  #   - cron: "*/5 * * * *"  # riattivalo quando funziona
+  workflow_dispatch:
 
 jobs:
-  ping:
+  diag:
     runs-on: ubuntu-latest
     steps:
-      - name: Diagnose reachability and auth
+      - name: Show inputs
         env:
           ESP_BASE: ${{ secrets.ESP_BASE }}
           ESP_USER: ${{ secrets.ESP_USER }}
           ESP_PASS: ${{ secrets.ESP_PASS }}
           ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
         run: |
-          set -e
-          [ -n "$ESP_BASE" ] || { echo "❌ Secret ESP_BASE mancante"; exit 1; }
+          echo "ESP_BASE: ${ESP_BASE:-<EMPTY>}"
+          echo "ESP_USER set? $([ -n "$ESP_USER" ] && echo yes || echo no)"
+          echo "ESP_PASS set? $([ -n "$ESP_PASS" ] && echo yes || echo no)"
+          echo "ESP_INSECURE: ${ESP_INSECURE:-false}"
 
-          AUTH_OPTS=()
-          if [ -n "$ESP_USER" ] && [ -n "$ESP_PASS" ]; then
-            AUTH_OPTS=(-u "$ESP_USER:$ESP_PASS")
-          fi
+      - name: DNS/Port check + curl verbose
+        env:
+          ESP_BASE: ${{ secrets.ESP_BASE }}
+          ESP_USER: ${{ secrets.ESP_USER }}
+          ESP_PASS: ${{ secrets.ESP_PASS }}
+          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+        run: |
+          set -euo pipefail
+          [ -n "${ESP_BASE:-}" ] || { echo "❌ Secret ESP_BASE mancante"; exit 1; }
 
-          SSL_OPTS=()
-          if [ "$ESP_INSECURE" = "true" ]; then
-            SSL_OPTS=(-k)
-          fi
+          python3 - <<'PY' > /tmp/url.env
+import os, sys, urllib.parse
+u = urllib.parse.urlparse(os.environ['ESP_BASE'])
+scheme = u.scheme or 'http'
+host   = u.hostname or ''
+port   = u.port or (443 if scheme=='https' else 80)
+path   = u.path.rstrip('/')
+print(f"SCHEME={scheme}")
+print(f"HOST={host}")
+print(f"PORT={port}")
+print(f"BASE={scheme}://{host}:{port}{path}")
+PY
+          source /tmp/url.env
+          echo "Resolved: $BASE"
+          echo "DNS:"
+          getent ahostsv4 "$HOST" || true
 
-          test_one () {
-            local PATH_="$1"
-            echo "---- TEST $ESP_BASE$PATH_"
-            CODE=$(curl -L -sS -o /tmp/out "${AUTH_OPTS[@]}" "${SSL_OPTS[@]}" \
-                   -w "%{http_code}" "$ESP_BASE$PATH_?t=$(date +%s)" || true)
-            echo "HTTP $CODE"
-            head -c 400 /tmp/out; echo
-            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 400 ]; then
-              echo "✅ OK $PATH_"; return 0
-            else
-              echo "⚠️  KO $PATH_ (HTTP $CODE)"; return 1
-            fi
+          echo "TCP connect test:"
+          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$HOST/$PORT" \
+            && echo "✅ TCP OK" || echo "❌ TCP FAIL"
+
+          AUTH=()
+          [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ] && AUTH=(-u "$ESP_USER:$ESP_PASS")
+          SSL=()
+          [ "${SCHEME}" = "https" ] && [ "${ESP_INSECURE:-}" = "true" ] && SSL=(-k)
+
+          test_path () {
+            local p="$1"
+            echo "---- CURL $BASE$p"
+            curl -v -L -sS "${AUTH[@]}" "${SSL[@]}" \
+                 -o /tmp/body -w "\n<HTTP=%{http_code}>\n" \
+                 "$BASE$p?t=$(date +%s)" || true
+            echo "Body (first 400 bytes):"
+            head -c 400 /tmp/body; echo; echo "----------"
           }
 
-          # Prova prima l'endpoint più semplice
-          test_one /api/ping && exit 0
-          # Poi lo stato completo
-          test_one /api/state && exit 0
+          test_path /api/ping
+          test_path /api/state
 
-          echo "❌ Nessun endpoint raggiungibile con codice 2xx"
-          exit 1
+          # Fallisci esplicitamente per tenere il rosso se non 2xx
+          code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" "${SSL[@]}" "$BASE/api/ping?t=$(date +%s)" || true)
+          [[ "$code" =~ ^2..$ ]] && echo "✅ OK /api/ping" || { echo "❌ HTTP $code su /api/ping"; exit 1; }
