@@ -1,7 +1,5 @@
-name: Ping ESP32
-
-on:
-  workflow_dispatch:
+name: Ping ESP (diag)
+on: workflow_dispatch
 
 jobs:
   ping:
@@ -11,43 +9,65 @@ jobs:
         shell: bash
 
     steps:
-      - name: Sanity
+      - name: Show env
         run: |
           set -x
           bash --version
           which curl
+          echo "ESP_BASE=${{ secrets.ESP_BASE }}"
 
-      - name: Check secrets
+      - name: Resolve & TCP connect
+        env:
+          ESP_BASE: ${{ secrets.ESP_BASE }}
         run: |
-          test -n "${{ secrets.ESP_BASE }}" || { echo "❌ ESP_BASE mancante"; exit 1; }
+          set -e
+          python3 - <<'PY'
+          import os, socket, urllib.parse, sys
+          u=os.environ['ESP_BASE']
+          p=urllib.parse.urlparse(u)
+          host=p.hostname; port=p.port or (80 if p.scheme=='http' else 443)
+          print("URL:", u)
+          print("Host:", host, "Port:", port)
+          try:
+            addrs = socket.getaddrinfo(host, port)
+            print("DNS:", [a[4][0] for a in addrs])
+          except Exception as e:
+            print("DNS ERROR:", e); sys.exit(2)
+          s=socket.socket(); s.settimeout(8)
+          try:
+            s.connect((host, port)); print("TCP CONNECT OK")
+          except Exception as e:
+            print("TCP ERROR:", e); sys.exit(3)
+          finally:
+            s.close()
+          PY
 
-      - name: Ping endpoint
+      - name: Curl /api/ping (verbose)
         env:
           ESP_BASE:     ${{ secrets.ESP_BASE }}      # es. http://miohost.dynu.net:8081
-          ESP_USER:     ${{ secrets.ESP_USER }}      # opzionale (Basic Auth)
-          ESP_PASS:     ${{ secrets.ESP_PASS }}      # opzionale
-          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}  # "true" se https con cert non valido
+          ESP_USER:     ${{ secrets.ESP_USER }}      # se usi Basic Auth
+          ESP_PASS:     ${{ secrets.ESP_PASS }}
+          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}  # "true" per HTTPS self-signed
         run: |
-          set -euo pipefail
+          set -o pipefail
+          OPTS="-v --connect-timeout 8 --max-time 20 --retry 1 --retry-connrefused"
+          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"; fi
+          if [[ "$ESP_BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then OPTS="$OPTS -k"; fi
 
-          BASE="$ESP_BASE"
-          [[ "$BASE" =~ ^https?:// ]] || { echo "ESP_BASE deve iniziare con http:// o https://"; exit 1; }
+          mkdir -p out
+          curl $OPTS "$ESP_BASE/api/ping?t=$(date +%s)" -D out/headers.txt -o out/body.txt || true
 
-          # Opzioni curl (niente array: massima compatibilità)
-          OPTS="-sS -L --connect-timeout 8 --max-time 20 --retry 2 --retry-connrefused"
-          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then
-            OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"
+          echo "----- HEADERS"; cat out/headers.txt || true
+          echo "----- BODY";    cat out/body.txt    || true
+
+          code=$(awk 'toupper($1)=="HTTP/"{c=$2} END{print c+0}' out/headers.txt)
+          echo "HTTP code: $code"
+          if [[ $code -lt 200 || $code -ge 300 ]]; then
+            echo "::error::Ping failed with HTTP $code"
+            exit 1
           fi
-          if [[ "$BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then
-            OPTS="$OPTS -k"
-          fi
 
-          echo "# GET $BASE/api/ping"
-          code=$(bash -lc "curl $OPTS -o /dev/null -w '%{http_code}' \"$BASE/api/ping?t=\$(date +%s)\"")
-          echo "HTTP $code"
-          [[ "$code" == 2* ]] || { echo "❌ ping fallito"; exit 1; }
-
-      - name: Scarica /api/state e pubblica artifact
+      - name: Fetch /api/state (best effort)
         if: ${{ always() }}
         env:
           ESP_BASE:     ${{ secrets.ESP_BASE }}
@@ -55,16 +75,14 @@ jobs:
           ESP_PASS:     ${{ secrets.ESP_PASS }}
           ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
         run: |
-          set -e
           OPTS="-sS -L --connect-timeout 8 --max-time 30"
           if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"; fi
           if [[ "$ESP_BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then OPTS="$OPTS -k"; fi
-          mkdir -p out
-          bash -lc "curl $OPTS -o out/state.json \"$ESP_BASE/api/state\" || true"
+          curl $OPTS -o out/state.json "$ESP_BASE/api/state" || true
           ls -l out || true
 
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: state-json
-          path: out/state.json
+          name: diag-output
+          path: out
