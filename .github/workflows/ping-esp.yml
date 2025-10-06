@@ -88,6 +88,7 @@ jobs:
           set -euo pipefail
           mkdir -p states
           csv="states/metrics.csv"
+          # Header corretto (include le sonde DS e termina con rtc_epoch_esp32)
           if [ ! -s "$csv" ]; then
             echo "ts,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
           fi
@@ -120,6 +121,7 @@ jobs:
               (.rtc_epoch_esp32 // null)
             ] | @csv
           ' state.json >> "$csv"
+
 
       - name: Commit & push
         run: |
