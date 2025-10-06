@@ -21,8 +21,9 @@ jobs:
   pull:
     runs-on: ubuntu-latest
     env:
-      # Se l'input manuale è presente lo usa, altrimenti prende il secret
-      ESP_BASE: ${{ inputs.override_base != '' && inputs.override_base || secrets.ESP_BASE }}
+      # Se il workflow è avviato manualmente ed è stato passato override_base non vuoto → usalo,
+      # altrimenti usa il secret ESP_BASE
+      ESP_BASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.override_base != '' && github.event.inputs.override_base || secrets.ESP_BASE }}
       ESP_USER: ${{ secrets.ESP_USER }}
       ESP_PASS: ${{ secrets.ESP_PASS }}
 
@@ -41,6 +42,10 @@ jobs:
         run: |
           set -euo pipefail
           BASE="${ESP_BASE%/}"
+          if [ -z "$BASE" ]; then
+            echo "::error::ESP_BASE non impostata (né override né secret)"
+            exit 1
+          fi
           echo "BASE=$BASE" >> "$GITHUB_ENV"
           echo "Using BASE=$BASE"
 
@@ -84,34 +89,35 @@ jobs:
           mkdir -p states
           csv="states/metrics.csv"
           if [ ! -s "$csv" ]; then
-            echo "ts,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
+            echo "ts,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
           fi
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -r --arg ts "$ts" '
             [
               $ts,
-            (.soil1 // 0),
-            (.soil2 // 0),
-            (.sens_suolo_anal1 // 0),
-            (.sens_suolo_anal2 // 0),
-            (.t_air_ds // null),
-            (.t_soil_ds // null),
-            (.bme_t // null),
-            (.bme_rh // null),
-            (.bme_p // null),
-            (.bme_iaq // null),
-            (.bme_static_iaq // null),
-            (.bme_co2eq // null),
-            (.bme_voc // null),
-            (.bme_gas_pct // null),
-            (.bme_gas_raw // null),
-            (.vbat // null),
-            (.vpv // null),
-            (.ppv // null),
-            (.flow_lph // null),
-            (.flow_total // null),
-            (.valve1 // null),
-            (.valve2 // null)
+              (.soil1 // 0),
+              (.soil2 // 0),
+              (.sens_suolo_anal1 // 0),
+              (.sens_suolo_anal2 // 0),
+              (.t_air_ds // null),
+              (.t_soil_ds // null),
+              (.bme_t // null),
+              (.bme_rh // null),
+              (.bme_p // null),
+              (.bme_iaq // null),
+              (.bme_static_iaq // null),
+              (.bme_co2eq // null),
+              (.bme_voc // null),
+              (.bme_gas_pct // null),
+              (.bme_gas_raw // null),
+              (.vbat // null),
+              (.vpv // null),
+              (.ppv // null),
+              (.flow_lph // null),
+              (.flow_total // null),
+              (.valve1 // null),
+              (.valve2 // null),
+              (.rtc_epoch_esp32 // null)
             ] | @csv
           ' state.json >> "$csv"
 
