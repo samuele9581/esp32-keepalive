@@ -40,15 +40,28 @@ jobs:
           curl -fsSL "$BASE_URL/api/state" -o "states/raw/$ts.json"
           echo -n "$ts," >> states/metrics.csv
           jq -r '[
-              (.soil1 // "NA"),
-              (.soil2 // "NA"),
-              (.bme_t // "NA"),
-              (.bme_rh // "NA"),
-              (.bme_iaq // "NA"),
-              (.bme_voc // "NA"),
-              (.bme_co2eq // "NA"),
-              (.vpv // "NA"),
-              (.ppv // "NA")
+            (.soil1 // 0),
+            (.soil2 // 0),
+            (.sens_suolo_anal1 // 0),
+            (.sens_suolo_anal2 // 0),
+            (.t_air_ds // null),
+            (.t_soil_ds // null),
+            (.bme_t // null),
+            (.bme_rh // null),
+            (.bme_p // null),
+            (.bme_iaq // null),
+            (.bme_static_iaq // null),
+            (.bme_co2eq // null),
+            (.bme_voc // null),
+            (.bme_gas_pct // null),
+            (.bme_gas_raw // null),
+            (.vbat // null),
+            (.vpv // null),
+            (.ppv // null),
+            (.flow_lph // null),
+            (.flow_total // null),
+            (.valve1 // null),
+            (.valve2 // null)
             ] | @csv' "states/raw/$ts.json" >> states/metrics.csv
           cp states/metrics.csv docs/metrics.csv
 
