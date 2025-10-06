@@ -67,21 +67,35 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch /api/state
+          - name: Fetch /api/state (JSON)
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           url="$BASE/api/state"
           if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
             auth=(-u "$ESP_USER:$ESP_PASS")
           else
             auth=()
           fi
-          curl -sS --connect-timeout 10 --max-time 30 "${auth[@]}" "$url" -o state.json
-          # Validazione base
+          echo "→ GET $url"
+          http_code=$(curl -sS -o state.json -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
+          echo "HTTP_CODE=$http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Body:"; cat state.json || true
+            if [ "$http_code" -eq 401 ]; then
+              echo "::error::401 Unauthorized – imposta i secret ESP_USER/ESP_PASS (Basic Auth attiva sull'ESP32)."
+            else
+              echo "::error::GET $url failed with HTTP $http_code"
+            fi
+            exit 1
+          fi
+
+          # Validazione JSON
           jq type state.json
+
           ts=$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p states/raw
           cp state.json "states/raw/state_$ts.json"
+
 
       - name: Append CSV
         run: |
