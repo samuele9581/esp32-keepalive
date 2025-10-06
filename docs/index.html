@@ -1,162 +1,340 @@
 <!doctype html>
 <html lang="it">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Storico ESP32 – Grafici</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Storico ESP32 – Grafici (via GitHub Actions)</title>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Papa Parse (CSV robusto) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:12px;background:#0b0f14;color:#e6e6e6}
-    .card{background:#131c26;border:1px solid #22303d;border-radius:14px;padding:12px;margin-bottom:12px}
-    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    select,input,button{background:#0f151c;border:1px solid #334556;color:#e6e6e6;border-radius:10px;padding:6px 10px}
-    button{cursor:pointer}
-    label{opacity:.85}
-    canvas{background:#fff;border-radius:10px}
+    :root { --bg:#0f1222; --panel:#171a2e; --txt:#e7e9f7; --muted:#95a0c6; --accent:#7aa2ff; }
+    * { box-sizing: border-box; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:16px/1.35 system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+    header { position:sticky; top:0; z-index:3; background:linear-gradient(180deg, rgba(23,26,46,.98), rgba(23,26,46,.92)); padding:14px 16px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
+    header h1 { margin:0; font-size:20px; letter-spacing:.2px; }
+    .wrap { max-width:1200px; margin:0 auto; padding:16px; }
+    .panel { background:var(--panel); border-radius:16px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,.25); }
+    .controls { display:flex; flex-wrap:wrap; gap:10px 12px; align-items:center; }
+    .controls label { font-size:14px; color:var(--muted); margin-right:6px; }
+    select, input[type="text"] {
+      background:#0f1230; color:var(--txt); border:1px solid #2a2f55; border-radius:10px; padding:10px 12px; min-width:160px;
+      outline:none;
+    }
+    button { background:var(--accent); color:#0b1022; border:0; border-radius:12px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    button[disabled]{ opacity:.6; cursor:not-allowed; }
+    .src { margin-left:auto; display:flex; gap:8px; align-items:center; flex:1 1 320px; min-width:260px; }
+    .src input{ width:100%; }
+    .row { margin-top:16px; display:grid; grid-template-columns:1fr; gap:14px; }
+    @media (min-width:900px){ .row { grid-template-columns:1fr 1fr 1fr; } }
+    .card { background:#0f1230; border:1px solid #2a2f55; border-radius:14px; padding:12px; height:320px; }
+    .card h3{ margin:0 0 8px; font-size:14px; color:var(--muted); font-weight:600; }
+    canvas { width:100% !important; height:260px !important; }
+    .foot { margin-top:18px; color:var(--muted); font-size:13px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    a { color:var(--accent); text-decoration:none; }
+    .toast{ position:fixed; right:16px; bottom:16px; background:#1b2246; color:var(--txt); border:1px solid #33407a; padding:10px 12px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
   </style>
 </head>
 <body>
-  <h2>Storico ESP32 – Grafici (via GitHub Actions)</h2>
+  <header>
+    <div class="wrap">
+      <h1>Storico ESP32 – Grafici (via GitHub Actions)</h1>
+    </div>
+  </header>
 
-  
-  <div class="card">
-    <div class="row">
-      <label>Metrica 1</label><select id="m1"></select>
-      <label>Metrica 2</label><select id="m2"></select>
-      <label>Metrica 3</label><select id="m3"></select>
-      <label>Finestra</label>
-      <select id="win">
-        <option value="1">Ultimo giorno</option>
-        <option value="3">Ultimi 3 giorni</option>
-        <option value="7" selected>Ultimi 7 giorni</option>
-        <option value="30">Ultimi 30 giorni</option>
-        <option value="0">Tutto</option>
-      </select>
-      <button id="refresh">Aggiorna</button>
-      <small class="row">Fonte: <code id="src"></code></small>
+  <div class="wrap">
+    <div class="panel">
+      <div class="controls">
+        <div>
+          <label for="m1">Metrica 1</label>
+          <select id="m1"></select>
+        </div>
+        <div>
+          <label for="m2">Metrica 2</label>
+          <select id="m2"></select>
+        </div>
+        <div>
+          <label for="m3">Metrica 3</label>
+          <select id="m3"></select>
+        </div>
+
+        <div>
+          <label for="win">Finestra</label>
+          <select id="win">
+            <option value="24h">Ultime 24 ore</option>
+            <option value="3d">Ultimi 3 giorni</option>
+            <option value="7d" selected>Ultimi 7 giorni</option>
+            <option value="30d">Ultimi 30 giorni</option>
+            <option value="90d">Ultimi 90 giorni</option>
+            <option value="all">Tutto</option>
+          </select>
+        </div>
+
+        <button id="go">Aggiorna</button>
+
+        <div class="src">
+          <label for="src">Fonte:</label>
+          <input id="src" type="text" spellcheck="false" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <h3 id="t1">Grafico 1</h3>
+          <canvas id="c1"></canvas>
+        </div>
+        <div class="card">
+          <h3 id="t2">Grafico 2</h3>
+          <canvas id="c2"></canvas>
+        </div>
+        <div class="card">
+          <h3 id="t3">Grafico 3</h3>
+          <canvas id="c3"></canvas>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>CSV:</span>
+        <a id="openCsv" target="_blank" rel="noopener">Apri file</a>
+        <span id="count"></span>
+        <span id="tsRange"></span>
+      </div>
     </div>
   </div>
 
-  <div class="card"><canvas id="c1" height="240"></canvas></div>
-  <div class="card"><canvas id="c2" height="240"></canvas></div>
-  <div class="card"><canvas id="c3" height="240"></canvas></div>
+  <div id="toast" class="toast" style="display:none"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
-  // === CONFIG: imposta il tuo repo ===
-  const RAW_CSV_URL = "https://raw.githubusercontent.com/samuele9581/esp32-keepalive/main/states/metrics.csv";
+    // === Config iniziale ===
+    const CSV_URL_DEFAULT =
+      'https://raw.githubusercontent.com/samuele9581/esp32-keepalive/main/states/metrics.csv';
 
-  document.getElementById('src').textContent = RAW_CSV_URL;
-
-  // util
-  const sleep = ms => new Promise(r=>setTimeout(r,ms));
-  const parseCSV = (text) => {
-    const lines = text.trim().split(/\r?\n/);
-    if (!lines.length) return { header: [], rows: [] };
-    const header = lines[0].split(',').map(h => h.trim());
-    const rows = lines.slice(1).map(line => {
-      const cells = line.split(',').map(c => c.trim());
-      const obj = {};
-      header.forEach((h,i) => obj[h] = cells[i] ?? "");
-      return obj;
-    });
-    return { header, rows };
-  };
-
-  // fetch CSV (con piccolo cache-buster)
-  async function fetchCSV(url){
-    const u = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-    const r = await fetch(u);
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return await r.text();
-  }
-
-  let charts = [];
-  function destroyCharts(){ charts.forEach(ch=>ch.destroy()); charts = []; }
-
-  function buildSelects(header){
-    const metrics = header.filter(h => h!=='timestamp' && h!=='time' && h!=='ts');
-    const fill = (id, def) => {
-      const sel = document.getElementById(id);
-      sel.innerHTML = '<option value="">—</option>' + metrics.map(m=>`<option>${m}</option>`).join('');
-      if (metrics.includes(def)) sel.value = def;
+    const LS = {
+      url: 'hist.url',
+      m1: 'hist.m1',
+      m2: 'hist.m2',
+      m3: 'hist.m3',
+      win: 'hist.win'
     };
-    // piccoli default sensati
-    fill('m1', metrics.includes('soil1')?'soil1':metrics[0]);
-    fill('m2', metrics.includes('soil2')?'soil2':(metrics[1]||''));
-    fill('m3', metrics.includes('bme_voc')?'bme_voc':(metrics[2]||''));
-  }
 
-  function filterWindow(rows, days){
-    if(!days || days<=0) return rows;
-    const now = Date.now();
-    const from = now - days*24*3600*1000;
-    return rows.filter(r => {
-      const t = Date.parse(r.timestamp || r.time || r.ts || "");
-      return isFinite(t) && t >= from;
-    });
-  }
+    // === UI refs ===
+    const sel1 = document.getElementById('m1');
+    const sel2 = document.getElementById('m2');
+    const sel3 = document.getElementById('m3');
+    const selWin = document.getElementById('win');
+    const btnGo = document.getElementById('go');
+    const inpSrc = document.getElementById('src');
+    const openCsv = document.getElementById('openCsv');
+    const t1 = document.getElementById('t1');
+    const t2 = document.getElementById('t2');
+    const t3 = document.getElementById('t3');
+    const countEl = document.getElementById('count');
+    const tsRangeEl = document.getElementById('tsRange');
+    const toast = document.getElementById('toast');
 
-  function toSeries(rows, key){
-    const pts = [];
-    for(const r of rows){
-      const t = Date.parse(r.timestamp || r.time || r.ts || "");
-      const v = parseFloat(r[key]);
-      if (isFinite(t) && isFinite(v)) pts.push({x: new Date(t), y: v});
+    // === State ===
+    const CH = {}; // charts registry
+    let DATA = []; // rows (objects)
+    let HEAD = []; // columns
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toast.style.display = 'none', 3200);
     }
-    return pts.sort((a,b)=>a.x-b.x);
-  }
 
-  function drawChart(canvasId, label, points){
-    const ctx = document.getElementById(canvasId).getContext('2d');
-    const ch = new Chart(ctx, {
-      type: 'line',
-      data: { datasets: [ { label, data: points, tension: 0.15, pointRadius: 0 } ] },
-      options: {
-        animation: false,
-        parsing: false,
-        scales: {
-          x: { type: 'time', time: { unit: 'hour' } },
-          y: { beginAtZero: false }
+    function setBtnBusy(b) {
+      btnGo.disabled = b;
+      btnGo.textContent = b ? 'Carico…' : 'Aggiorna';
+    }
+
+    function loadDefaults() {
+      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
+      inpSrc.value = url;
+      selWin.value = localStorage.getItem(LS.win) || '7d';
+    }
+
+    function savePrefs() {
+      localStorage.setItem(LS.url, inpSrc.value.trim());
+      localStorage.setItem(LS.m1, sel1.value || '');
+      localStorage.setItem(LS.m2, sel2.value || '');
+      localStorage.setItem(LS.m3, sel3.value || '');
+      localStorage.setItem(LS.win, selWin.value || '7d');
+    }
+
+    // Popola i 3 select metriche da HEAD
+    function populateMetricSelects() {
+      const opts = HEAD.filter(h => h !== 'ts');
+      const fill = (sel, defVal) => {
+        sel.innerHTML = '';
+        opts.forEach(k => {
+          const o = document.createElement('option');
+          o.value = k; o.textContent = k;
+          sel.appendChild(o);
+        });
+        if (defVal && opts.includes(defVal)) sel.value = defVal;
+      };
+
+      fill(sel1, localStorage.getItem(LS.m1) || opts[0]);
+      fill(sel2, localStorage.getItem(LS.m2) || opts[1] || opts[0]);
+      fill(sel3, localStorage.getItem(LS.m3) || opts[2] || opts[0]);
+    }
+
+    // Calcola timestamp soglia dalla finestra selezionata
+    function windowThreshold(id) {
+      const now = Date.now();
+      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
+      if (id === 'all' || !map[id]) return 0;
+      return now - map[id]*60*60*1000;
+    }
+
+    // Format data/ora breve
+    function fmtTs(s) {
+      try {
+        const d = new Date(s);
+        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      } catch { return s; }
+    }
+
+    // Carica CSV
+    async function fetchCsv(url) {
+      const u = new URL(url);
+      // cache-buster
+      u.searchParams.set('t', String(Date.now()));
+      const res = await fetch(u.toString(), { cache:'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const txt = await res.text();
+      return new Promise((resolve, reject) => {
+        Papa.parse(txt, {
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: true,
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields }),
+          error: (err) => reject(err)
+        });
+      });
+    }
+
+    function renderChart(canvasId, chartConfig) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      if (CH[canvasId]) { try { CH[canvasId].destroy(); } catch {} }
+      CH[canvasId] = new Chart(canvas.getContext('2d'), chartConfig);
+      return CH[canvasId];
+    }
+
+    function buildLineConfig(labels, values, label) {
+      return {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data: values,
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            spanGaps: true
+          }]
         },
-        plugins: { legend: { display: true } }
-      }
-    });
-    charts.push(ch);
-  }
-
-  async function render(){
-    try{
-      const csv = await fetchCSV(RAW_CSV_URL);
-      const { header, rows } = parseCSV(csv);
-      if (!header.length || !rows.length){ alert('CSV vuoto'); return; }
-
-      // popola select solo la prima volta
-      if (!document.getElementById('m1').options.length) buildSelects(header);
-
-      const days = +document.getElementById('win').value;
-      const filtered = filterWindow(rows, days);
-
-      const k1 = document.getElementById('m1').value;
-      const k2 = document.getElementById('m2').value;
-      const k3 = document.getElementById('m3').value;
-
-      
-      destroyCharts();
-
-      if (k1){ drawChart('c1', k1, toSeries(filtered, k1)); }
-      if (k2){ drawChart('c2', k2, toSeries(filtered, k2)); }
-      if (k3){ drawChart('c3', k3, toSeries(filtered, k3)); }
-    } catch(e){
-      console.error(e);
-      alert('Errore caricamento CSV: ' + e.message);
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'nearest', intersect: false },
+          scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 8 } },
+            y: { beginAtZero: false }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: ctx => ctx[0]?.label || '',
+                label: ctx => `${label}: ${ctx.parsed.y}`
+              }
+            }
+          }
+        }
+      };
     }
-  }
 
-  document.getElementById('refresh').addEventListener('click', render);
+    function updateTitles() {
+      t1.textContent = sel1.value || 'Grafico 1';
+      t2.textContent = sel2.value || 'Grafico 2';
+      t3.textContent = sel3.value || 'Grafico 3';
+    }
 
-  // primo render + auto-refresh ogni 5 minuti
-  render();
-  setInterval(render, 5*60*1000);
+    function filterAndDraw() {
+      if (!DATA.length) return;
+      const thr = windowThreshold(selWin.value);
+      const rows = (thr>0) ? DATA.filter(r => Date.parse(r.ts || r.timestamp || 0) >= thr) : DATA.slice();
+
+      // labels
+      const labels = rows.map(r => fmtTs(r.ts || r.timestamp || ''));
+
+      const drawOne = (sel, canvasId) => {
+        const key = sel.value;
+        if (!key) return;
+        const vals = rows.map(r => (r[key] ?? null));
+        renderChart(canvasId, buildLineConfig(labels, vals, key));
+      };
+
+      updateTitles();
+      drawOne(sel1, 'c1');
+      drawOne(sel2, 'c2');
+      drawOne(sel3, 'c3');
+
+      // footer info
+      countEl.textContent = `• punti: ${rows.length}`;
+      if (rows.length) {
+        const a = rows[0].ts || rows[0].timestamp, b = rows[rows.length-1].ts || rows[rows.length-1].timestamp;
+        tsRangeEl.textContent = `• intervallo: ${fmtTs(a)} → ${fmtTs(b)}`;
+      } else {
+        tsRangeEl.textContent = '';
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        setBtnBusy(true);
+        savePrefs();
+        const url = inpSrc.value.trim();
+        openCsv.href = url;
+        const { rows, fields } = await fetchCsv(url);
+        if (!fields?.length) throw new Error('CSV senza header');
+        // normalizza ts
+        DATA = rows.map(r => {
+          if (!r.ts && r.timestamp) r.ts = r.timestamp;
+          return r;
+        }).filter(r => r.ts); // richiede colonna temporale
+        HEAD = fields.includes('ts') ? fields : ['ts', ...fields.filter(f => f!=='timestamp')];
+        populateMetricSelects();
+        filterAndDraw();
+      } catch (e) {
+        console.error(e);
+        showToast('Errore caricamento CSV: ' + (e.message || e));
+      } finally {
+        setBtnBusy(false);
+      }
+    }
+
+    // === Eventi ===
+    btnGo.addEventListener('click', refreshAll);
+    selWin.addEventListener('change', () => { savePrefs(); filterAndDraw(); });
+    sel1.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    sel2.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    sel3.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    inpSrc.addEventListener('change', () => { savePrefs(); });
+
+    // === Avvio ===
+    loadDefaults();
+    openCsv.href = inpSrc.value.trim();
+    refreshAll();
   </script>
 </body>
 </html>
