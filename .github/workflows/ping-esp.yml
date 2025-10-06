@@ -1,88 +1,68 @@
-name: Ping ESP (diag)
-on: workflow_dispatch
+name: Irrigazione - Pull metrics
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # ogni 5 minuti
+  workflow_dispatch:
 
 jobs:
-  ping:
+  pull:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-
+    env:
+      ESP_BASE: ${{ secrets.ESP_BASE }}
+      ESP_USER: ${{ secrets.ESP_USER }}
+      ESP_PASS: ${{ secrets.ESP_PASS }}
     steps:
-      - name: Show env
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ping (verbose)
+        id: ping
         run: |
-          set -x
-          bash --version
-          which curl
-          echo "ESP_BASE=${{ secrets.ESP_BASE }}"
-
-      - name: Resolve & TCP connect
-        env:
-          ESP_BASE: ${{ secrets.ESP_BASE }}
-        run: |
-          set -e
-          python3 - <<'PY'
-          import os, socket, urllib.parse, sys
-          u=os.environ['ESP_BASE']
-          p=urllib.parse.urlparse(u)
-          host=p.hostname; port=p.port or (80 if p.scheme=='http' else 443)
-          print("URL:", u)
-          print("Host:", host, "Port:", port)
-          try:
-            addrs = socket.getaddrinfo(host, port)
-            print("DNS:", [a[4][0] for a in addrs])
-          except Exception as e:
-            print("DNS ERROR:", e); sys.exit(2)
-          s=socket.socket(); s.settimeout(8)
-          try:
-            s.connect((host, port)); print("TCP CONNECT OK")
-          except Exception as e:
-            print("TCP ERROR:", e); sys.exit(3)
-          finally:
-            s.close()
-          PY
-
-      - name: Curl /api/ping (verbose)
-        env:
-          ESP_BASE:     ${{ secrets.ESP_BASE }}      # es. http://miohost.dynu.net:8081
-          ESP_USER:     ${{ secrets.ESP_USER }}      # se usi Basic Auth
-          ESP_PASS:     ${{ secrets.ESP_PASS }}
-          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}  # "true" per HTTPS self-signed
-        run: |
-          set -o pipefail
-          OPTS="-v --connect-timeout 8 --max-time 20 --retry 1 --retry-connrefused"
-          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"; fi
-          if [[ "$ESP_BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then OPTS="$OPTS -k"; fi
-
-          mkdir -p out
-          curl $OPTS "$ESP_BASE/api/ping?t=$(date +%s)" -D out/headers.txt -o out/body.txt || true
-
-          echo "----- HEADERS"; cat out/headers.txt || true
-          echo "----- BODY";    cat out/body.txt    || true
-
-          code=$(awk 'toupper($1)=="HTTP/"{c=$2} END{print c+0}' out/headers.txt)
-          echo "HTTP code: $code"
-          if [[ $code -lt 200 || $code -ge 300 ]]; then
+          set -euxo pipefail
+          url="$ESP_BASE/api/ping"
+          auth=()
+          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
+            auth=(-u "$ESP_USER:$ESP_PASS")
+          fi
+          echo "→ GET $url"
+          # verbose per debug; non fallire qui, solo raccogli il codice
+          code=$(curl -v --connect-timeout 10 --max-time 15 -o /dev/null -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
+          echo "HTTP_CODE=$code"
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
             echo "::error::Ping failed with HTTP $code"
             exit 1
           fi
 
-      - name: Fetch /api/state (best effort)
-        if: ${{ always() }}
-        env:
-          ESP_BASE:     ${{ secrets.ESP_BASE }}
-          ESP_USER:     ${{ secrets.ESP_USER }}
-          ESP_PASS:     ${{ secrets.ESP_PASS }}
-          ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+      - name: Scarica /api/state
         run: |
-          OPTS="-sS -L --connect-timeout 8 --max-time 30"
-          if [[ -n "${ESP_USER:-}" && -n "${ESP_PASS:-}" ]]; then OPTS="$OPTS -u ${ESP_USER}:${ESP_PASS}"; fi
-          if [[ "$ESP_BASE" == https://* && "${ESP_INSECURE:-}" == "true" ]]; then OPTS="$OPTS -k"; fi
-          curl $OPTS -o out/state.json "$ESP_BASE/api/state" || true
-          ls -l out || true
+          set -euxo pipefail
+          auth=()
+          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
+            auth=(-u "$ESP_USER:$ESP_PASS")
+          fi
+          curl -sS --connect-timeout 10 --max-time 20 "${auth[@]}" "$ESP_BASE/api/state" -o state.json
+          jq 'keys' state.json || true   # stampa le chiavi disponibili (per debug)
 
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() }}
+      - name: Appendi riga CSV (timestamp + alcune metriche)
+        run: |
+          python3 - << 'PY'
+          import json, time, os
+          j=json.load(open('state.json'))
+          fields=["t_air_ds","t_soil_ds","soil1","soil2","bme_t","bme_rh","bme_voc","bme_co2eq","vpv","ppv","vbat"]
+          ts=int(time.time())
+          row=[str(ts)]+[("" if j.get(k) is None else str(j.get(k))) for k in fields]
+          line=",".join(row)+"\n"
+          fn="metrics.csv"
+          # header se file nuovo
+          if not os.path.exists(fn):
+            open(fn,"w").write("ts,"+",".join(fields)+"\n")
+          open(fn,"a").write(line)
+          print(line.strip())
+          PY
+
+      - name: Commit CSV
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          name: diag-output
-          path: out
+          commit_message: "metrics: update"
+          file_pattern: metrics.csv
