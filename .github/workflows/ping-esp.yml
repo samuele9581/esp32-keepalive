@@ -122,14 +122,30 @@ jobs:
           cp "$csv" docs/metrics.csv
           head -1 docs/metrics.csv || true
 
-      - name: Commit & push
-        if: steps.ping.outputs.ok == '1'
+            - name: Commit & push (safe rebase + retry)
         run: |
           set -euxo pipefail
           git config user.name  "gh-actions"
           git config user.email "actions@github.com"
-          git add states/metrics.csv states/raw/*.json docs/metrics.csv
+
+          git add states/metrics.csv states/raw/*.json || true
           git commit -m "ESP32 pull: $(date -u +%F' '%T) UTC" || { echo "Nothing to commit"; exit 0; }
-          # Evita collisioni
-          git pull --rebase || true
-          git push
+
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          git fetch origin "$BRANCH"
+
+          tries=3
+          for i in $(seq 1 $tries); do
+            # rebase sui commit remoti; se fallisce, abort e riprova
+            git pull --rebase origin "$BRANCH" || { git rebase --abort || true; }
+            if git push; then
+              echo "Pushed on try $i"
+              exit 0
+            fi
+            echo "Retry $i/$tries…"
+            sleep 2
+          done
+
+          echo "::error::Push failed after $tries attempts"
+          exit 1
+
