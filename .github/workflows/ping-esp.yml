@@ -1,40 +1,52 @@
-name: Ping ESP32 (keep history fresh)
+name: Ping ESP32 (diag)
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # ogni 5 minuti (tempo in UTC)
-  workflow_dispatch:        # per avviare manualmente dal pulsante "Run workflow"
+  workflow_dispatch:  # lo lanci a mano
+  # schedule:
+  #   - cron: "*/5 * * * *"  # riattivalo quando funziona
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Hit /api/state (HTTP/HTTPS)
+      - name: Diagnose reachability and auth
         env:
           ESP_BASE: ${{ secrets.ESP_BASE }}
           ESP_USER: ${{ secrets.ESP_USER }}
           ESP_PASS: ${{ secrets.ESP_PASS }}
           ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
         run: |
-          if [ -z "$ESP_BASE" ]; then
-            echo "ESP_BASE non configurato"; exit 1
-          fi
+          set -e
+          [ -n "$ESP_BASE" ] || { echo "❌ Secret ESP_BASE mancante"; exit 1; }
 
-          # Costruisci opzioni curl in base ai secrets disponibili
-          AUTH_OPTS=""
+          AUTH_OPTS=()
           if [ -n "$ESP_USER" ] && [ -n "$ESP_PASS" ]; then
-            AUTH_OPTS="-u $ESP_USER:$ESP_PASS"
+            AUTH_OPTS=(-u "$ESP_USER:$ESP_PASS")
           fi
 
-          SSL_OPTS=""
+          SSL_OPTS=()
           if [ "$ESP_INSECURE" = "true" ]; then
-            SSL_OPTS="-k"
+            SSL_OPTS=(-k)
           fi
 
-          # Aggiungo un cache-buster ?t= per evitare caching lato proxy
-          URL="$ESP_BASE/api/state?t=$(date +%s)"
+          test_one () {
+            local PATH_="$1"
+            echo "---- TEST $ESP_BASE$PATH_"
+            CODE=$(curl -L -sS -o /tmp/out "${AUTH_OPTS[@]}" "${SSL_OPTS[@]}" \
+                   -w "%{http_code}" "$ESP_BASE$PATH_?t=$(date +%s)" || true)
+            echo "HTTP $CODE"
+            head -c 400 /tmp/out; echo
+            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 400 ]; then
+              echo "✅ OK $PATH_"; return 0
+            else
+              echo "⚠️  KO $PATH_ (HTTP $CODE)"; return 1
+            fi
+          }
 
-          echo "Chiamo: $URL"
-          # -f: fail su HTTP>=400, -s: silenzioso, -S: mostra errori
-          curl -fsS $AUTH_OPTS $SSL_OPTS "$URL" > /dev/null
-          echo "OK"
+          # Prova prima l'endpoint più semplice
+          test_one /api/ping && exit 0
+          # Poi lo stato completo
+          test_one /api/state && exit 0
+
+          echo "❌ Nessun endpoint raggiungibile con codice 2xx"
+          exit 1
