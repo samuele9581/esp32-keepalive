@@ -4,16 +4,32 @@ on:
   schedule:
     - cron: "*/10 * * * *"   # ogni 10 minuti
   workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Override BASE URL (es: http://host:port)"
+        required: false
+        default: ""
+      user:
+        description: "Basic Auth user (opzionale)"
+        required: false
+        default: ""
+      pass:
+        description: "Basic Auth password (opzionale)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
   group: collect-esp32
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
-  BASE_URL: "http://79.21.55.245:1234"   # se hai un dominio DYNU, meglio metterlo qui
+  # Ordine di priorità: input manuale > secret/var repo > fallback fisso
+  BASE_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.base_url != '' && github.event.inputs.base_url || vars.ESP_BASE || secrets.ESP_BASE || 'http://79.21.55.245:1234' }}
+  ESP_USER: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.user != '' && github.event.inputs.user || secrets.ESP_USER }}
+  ESP_PASS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pass != '' && github.event.inputs.pass || secrets.ESP_PASS }}
 
 jobs:
   pull:
@@ -24,49 +40,98 @@ jobs:
 
       - name: Install jq
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y jq
 
       - name: Prepare folders and CSV header
         run: |
+          set -euo pipefail
           mkdir -p states/raw docs
-          if [ ! -f states/metrics.csv ]; then
-            echo 'timestamp,soil1,soil2,bme_t,bme_rh,bme_iaq,bme_voc,bme_co2eq,vpv,ppv' > states/metrics.csv
+          csv="states/metrics.csv"
+          if [ ! -s "$csv" ]; then
+            # HEADER allineato alle colonne che scriviamo più sotto
+            echo "timestamp,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > "$csv"
+          fi
+
+      - name: Normalize BASE and check
+        run: |
+          set -euo pipefail
+          BASE="${BASE_URL%/}"
+          if [ -z "$BASE" ]; then
+            echo "::error::BASE_URL non impostata"
+            exit 1
+          fi
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo "Using BASE=$BASE"
+
+      - name: Ping (verbose)
+        run: |
+          set -euxo pipefail
+          url="$BASE/api/ping"
+          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
+            auth=(-u "$ESP_USER:$ESP_PASS")
+          else
+            auth=()
+          fi
+          echo "→ GET $url"
+          http_code=$(curl -sS -o ping.txt -w "%{http_code}" "${auth[@]}" "$url" || echo 0)
+          echo "HTTP_CODE=$http_code"
+          echo "Body:"; cat ping.txt || true
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::Ping failed with HTTP $http_code"
+            exit 1
           fi
 
       - name: Fetch /api/state and append row
         run: |
+          set -euo pipefail
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          curl -fsSL "$BASE_URL/api/state" -o "states/raw/$ts.json"
-          echo -n "$ts," >> states/metrics.csv
-          jq -r '[
-            (.soil1 // 0),
-            (.soil2 // 0),
-            (.sens_suolo_anal1 // 0),
-            (.sens_suolo_anal2 // 0),
-            (.t_air_ds // null),
-            (.t_soil_ds // null),
-            (.bme_t // null),
-            (.bme_rh // null),
-            (.bme_p // null),
-            (.bme_iaq // null),
-            (.bme_static_iaq // null),
-            (.bme_co2eq // null),
-            (.bme_voc // null),
-            (.bme_gas_pct // null),
-            (.bme_gas_raw // null),
-            (.vbat // null),
-            (.vpv // null),
-            (.ppv // null),
-            (.flow_lph // null),
-            (.flow_total // null),
-            (.valve1 // null),
-            (.valve2 // null)
-            ] | @csv' "states/raw/$ts.json" >> states/metrics.csv
+          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then
+            auth=(-u "$ESP_USER:$ESP_PASS")
+          else
+            auth=()
+          fi
+          curl -fsS --connect-timeout 10 --max-time 30 "${auth[@]}" "$BASE/api/state" -o "states/raw/$ts.json"
+          # Valida che sia JSON
+          jq type "states/raw/$ts.json" >/dev/null
+
+          # Riga CSV (tutte le colonne in ordine come da header)
+          jq -r --arg ts "$ts" '
+            [
+              $ts,
+              (.soil1 // 0),
+              (.soil2 // 0),
+              (.sens_suolo_anal1 // 0),
+              (.sens_suolo_anal2 // 0),
+              (.t_air_ds // null),
+              (.t_soil_ds // null),
+              (.bme_t // null),
+              (.bme_rh // null),
+              (.bme_p // null),
+              (.bme_iaq // null),
+              (.bme_static_iaq // null),
+              (.bme_co2eq // null),
+              (.bme_voc // null),
+              (.bme_gas_pct // null),
+              (.bme_gas_raw // null),
+              (.vbat // null),
+              (.vpv // null),
+              (.ppv // null),
+              (.flow_lph // null),
+              (.flow_total // null),
+              (.valve1 // null),
+              (.valve2 // null),
+              (.rtc_epoch_esp32 // null)
+            ] | @csv
+          ' "states/raw/$ts.json" >> states/metrics.csv
+
+          # Copia per GitHub Pages (opz.)
           cp states/metrics.csv docs/metrics.csv
 
       - name: Commit & push
         run: |
+          set -euxo pipefail
           if git status --porcelain | grep -q .; then
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
