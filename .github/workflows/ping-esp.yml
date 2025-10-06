@@ -12,10 +12,11 @@ jobs:
           ESP_USER: ${{ secrets.ESP_USER }}
           ESP_PASS: ${{ secrets.ESP_PASS }}
           ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+        shell: bash
         run: |
           echo "ESP_BASE: ${ESP_BASE:-<EMPTY>}"
-          echo "ESP_USER set? $([ -n "$ESP_USER" ] && echo yes || echo no)"
-          echo "ESP_PASS set? $([ -n "$ESP_PASS" ] && echo yes || echo no)"
+          if [ -n "${ESP_USER:-}" ]; then echo "ESP_USER set? yes"; else echo "ESP_USER set? no"; fi
+          if [ -n "${ESP_PASS:-}" ]; then echo "ESP_PASS set? yes"; else echo "ESP_PASS set? no"; fi
           echo "ESP_INSECURE: ${ESP_INSECURE:-false}"
 
       - name: DNS/Port check + curl verbose
@@ -24,35 +25,39 @@ jobs:
           ESP_USER: ${{ secrets.ESP_USER }}
           ESP_PASS: ${{ secrets.ESP_PASS }}
           ESP_INSECURE: ${{ secrets.ESP_INSECURE }}
+        shell: bash
         run: |
           set -euo pipefail
           [ -n "${ESP_BASE:-}" ] || { echo "❌ Secret ESP_BASE mancante"; exit 1; }
 
-          python3 - <<'PY' > /tmp/url.env
-import os, sys, urllib.parse
-u = urllib.parse.urlparse(os.environ['ESP_BASE'])
-scheme = u.scheme or 'http'
-host   = u.hostname or ''
-port   = u.port or (443 if scheme=='https' else 80)
-path   = u.path.rstrip('/')
-print(f"SCHEME={scheme}")
-print(f"HOST={host}")
-print(f"PORT={port}")
-print(f"BASE={scheme}://{host}:{port}{path}")
-PY
-          source /tmp/url.env
+          # Parse URL (scheme, host, port, path) in puro Bash
+          re='^(https?)://([^/:]+)(:([0-9]+))?(/.*)?$'
+          if [[ "$ESP_BASE" =~ $re ]]; then
+            SCHEME="${BASH_REMATCH[1]}"
+            HOST="${BASH_REMATCH[2]}"
+            PORT="${BASH_REMATCH[4]}"
+            PATH="${BASH_REMATCH[5]}"
+          else
+            echo "❌ ESP_BASE non valido: $ESP_BASE"; exit 1
+          fi
+          if [ -z "${PORT:-}" ]; then
+            if [ "$SCHEME" = "https" ]; then PORT=443; else PORT=80; fi
+          fi
+          PATH="${PATH%/}"
+          BASE="${SCHEME}://${HOST}:${PORT}${PATH}"
+
           echo "Resolved: $BASE"
           echo "DNS:"
           getent ahostsv4 "$HOST" || true
 
           echo "TCP connect test:"
-          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$HOST/$PORT" \
+          timeout 5 bash -lc "cat < /dev/null > /dev/tcp/$HOST/$PORT" \
             && echo "✅ TCP OK" || echo "❌ TCP FAIL"
 
           AUTH=()
-          [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ] && AUTH=(-u "$ESP_USER:$ESP_PASS")
+          if [ -n "${ESP_USER:-}" ] && [ -n "${ESP_PASS:-}" ]; then AUTH=(-u "$ESP_USER:$ESP_PASS"); fi
           SSL=()
-          [ "${SCHEME}" = "https" ] && [ "${ESP_INSECURE:-}" = "true" ] && SSL=(-k)
+          if [ "$SCHEME" = "https" ] && [ "${ESP_INSECURE:-}" = "true" ]; then SSL=(-k); fi
 
           test_path () {
             local p="$1"
@@ -67,6 +72,9 @@ PY
           test_path /api/ping
           test_path /api/state
 
-          # Fallisci esplicitamente per tenere il rosso se non 2xx
           code=$(curl -sS -o /dev/null -w "%{http_code}" "${AUTH[@]}" "${SSL[@]}" "$BASE/api/ping?t=$(date +%s)" || true)
-          [[ "$code" =~ ^2..$ ]] && echo "✅ OK /api/ping" || { echo "❌ HTTP $code su /api/ping"; exit 1; }
+          if [[ "$code" =~ ^2..$ ]]; then
+            echo "✅ OK /api/ping"
+          else
+            echo "❌ HTTP $code su /api/ping"; exit 1
+          fi
