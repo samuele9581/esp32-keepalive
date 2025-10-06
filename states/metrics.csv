@@ -1,2 +1,3 @@
 ts,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32
 "2025-10-06T09:55:50Z",,,0,0,22.18289,53.38254,1019.851,95.18383,69.73762,697.3762,0.782232,32.09487,223776.2,12.18004,0,,0,0,0,0,1759744550
+"2025-10-06T09:56:25Z",,,0,0,22.19042,53.34771,1019.845,95.33842,69.80515,698.0515,0.783431,32.21145,223629.6,12.18004,0,,0,0,0,0,1759744585
