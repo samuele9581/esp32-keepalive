@@ -112,13 +112,24 @@
     const CSV_URL_DEFAULT =
       'https://raw.githubusercontent.com/samuele9581/esp32-keepalive/main/states/metrics.csv';
 
-    const LS = {
-      url: 'hist.url',
-      m1: 'hist.m1',
-      m2: 'hist.m2',
-      m3: 'hist.m3',
-      win: 'hist.win'
+    const LS = { url:'hist.url', m1:'hist.m1', m2:'hist.m2', m3:'hist.m3', win:'hist.win' };
+
+    // Etichette "umane" (puoi personalizzarle qui)
+    const LABELS = {
+      t_air_ds:'T. aria °C', t_soil_ds:'T. suolo °C',
+      sens_suolo_anal1:'Umidità terreno A1 %', sens_suolo_anal2:'Umidità terreno A2 %',
+      soil1:'Umidità terreno 1 %', soil2:'Umidità terreno 2 %',
+      bme_t:'BME Temp °C', bme_rh:'BME UR %', bme_p:'BME Press hPa',
+      bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ statico', bme_iaq_acc:'BME IAQ acc',
+      bme_co2eq:'BME CO₂eq ppm', bme_voc:'BME VOCeq ppb', bme_gas_pct:'BME Gas %', bme_gas_raw:'BME Gas Ω',
+      flow_lph:'Flusso L/h', flow_total:'Totale L',
+      vpv:'VPV', ppv:'Potenza PV W', vbat:'VBAT',
+      rain:'Pioggia', motion:'Movimento', valve1:'Valvola 1', valve2:'Valvola 2'
     };
+    const prettyLabel = k => LABELS[k] || k;
+
+    // candidati colonna tempo
+    const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
 
     // === UI refs ===
     const sel1 = document.getElementById('m1');
@@ -136,9 +147,10 @@
     const toast = document.getElementById('toast');
 
     // === State ===
-    const CH = {}; // charts registry
-    let DATA = []; // rows (objects)
-    let HEAD = []; // columns
+    const CH = {};           // registrazione grafici
+    let ROWS = [];           // righe normalizzate
+    let METRIC_COLS = [];    // solo colonne numeriche
+    let TIME_COL = 'ts';     // nome colonna tempo effettiva nel CSV
 
     function showToast(msg) {
       toast.textContent = msg;
@@ -166,25 +178,102 @@
       localStorage.setItem(LS.win, selWin.value || '7d');
     }
 
-    // Popola i 3 select metriche da HEAD
-    function populateMetricSelects() {
-      const opts = HEAD.filter(h => h !== 'ts');
-      const fill = (sel, defVal) => {
-        sel.innerHTML = '';
-        opts.forEach(k => {
-          const o = document.createElement('option');
-          o.value = k; o.textContent = k;
-          sel.appendChild(o);
-        });
-        if (defVal && opts.includes(defVal)) sel.value = defVal;
-      };
-
-      fill(sel1, localStorage.getItem(LS.m1) || opts[0]);
-      fill(sel2, localStorage.getItem(LS.m2) || opts[1] || opts[0]);
-      fill(sel3, localStorage.getItem(LS.m3) || opts[2] || opts[0]);
+    function toNumber(v) {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      const s = String(v).trim().replace(',', '.');
+      if (s === '' || s.toLowerCase() === 'nan') return null;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
     }
 
-    // Calcola timestamp soglia dalla finestra selezionata
+    function parseEpochMaybe(v) {
+      const n = toNumber(v);
+      if (n == null) return null;
+      // euristica: secondi vs millisecondi
+      if (n > 1e12) return n;              // ms
+      if (n > 1e9)  return n * 1000;       // s
+      if (n > 1e6)  return n * 1000;       // s (short)
+      return null;
+    }
+
+    function detectTimeColumn(fields, sampleRows) {
+      // 1) se il CSV contiene una delle keyword classiche, usa quella
+      for (const k of TIME_CANDS) if (fields.includes(k)) return k;
+      // 2) altrimenti cerca una colonna che sembri timestamp
+      // controlla prime 10 righe
+      const checkRows = sampleRows.slice(0, 10);
+      for (const f of fields) {
+        let score = 0;
+        for (const r of checkRows) {
+          const v = r[f];
+          if (v == null || v === '') continue;
+          const iso = Date.parse(String(v));
+          const ep  = parseEpochMaybe(v);
+          if (Number.isFinite(iso) || Number.isFinite(ep)) { score++; }
+        }
+        if (score >= Math.ceil(checkRows.length * 0.5)) return f;
+      }
+      return null;
+    }
+
+    function normalizeRows(rows, timeField) {
+      const out = [];
+      for (const r of rows) {
+        let ms = null;
+        const v = r[timeField];
+        // prova epoch
+        ms = parseEpochMaybe(v);
+        if (!Number.isFinite(ms)) {
+          // prova parse ISO/data
+          const p = Date.parse(String(v));
+          if (Number.isFinite(p)) ms = p;
+        }
+        if (!Number.isFinite(ms)) continue; // scarta riga senza tempo valido
+        const rr = { ...r, ts: new Date(ms).toISOString() };
+        out.push(rr);
+      }
+      // ordina per tempo crescente
+      out.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
+      return out;
+    }
+
+    function detectNumericColumns(fields, rows, timeField) {
+      const cols = [];
+      for (const f of fields) {
+        if (f === timeField) continue;
+        let seen = 0, nums = 0;
+        for (const r of rows) {
+          const v = r[f];
+          if (v === '' || v == null) continue;
+          seen++;
+          if (toNumber(v) != null) nums++;
+          if (seen >= 20) break; // basta un campione
+        }
+        if (nums > 0 && nums >= Math.max(3, Math.ceil(seen * 0.6))) cols.push(f);
+      }
+      return cols;
+    }
+
+    function fillSelect(sel, keys, prefKey, fallbackIndex=0) {
+      sel.innerHTML = '';
+      keys.forEach(k => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = prettyLabel(k);
+        sel.appendChild(o);
+      });
+      const pref = localStorage.getItem(prefKey);
+      if (pref && keys.includes(pref)) sel.value = pref;
+      else if (keys[fallbackIndex]) sel.value = keys[fallbackIndex];
+    }
+
+    function populateMetricSelects() {
+      fillSelect(sel1, METRIC_COLS, LS.m1, 0);
+      fillSelect(sel2, METRIC_COLS, LS.m2, 1);
+      fillSelect(sel3, METRIC_COLS, LS.m3, 2);
+    }
+
+    // Calcola timestamp soglia
     function windowThreshold(id) {
       const now = Date.now();
       const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
@@ -192,28 +281,26 @@
       return now - map[id]*60*60*1000;
     }
 
-    // Format data/ora breve
-    function fmtTs(s) {
+    function fmtTsISO(iso) {
       try {
-        const d = new Date(s);
+        const d = new Date(iso);
         return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
-      } catch { return s; }
+      } catch { return iso; }
     }
 
     // Carica CSV
     async function fetchCsv(url) {
       const u = new URL(url);
-      // cache-buster
-      u.searchParams.set('t', String(Date.now()));
+      u.searchParams.set('t', String(Date.now())); // cache-buster
       const res = await fetch(u.toString(), { cache:'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const txt = await res.text();
       return new Promise((resolve, reject) => {
         Papa.parse(txt, {
           header: true,
-          dynamicTyping: true,
+          dynamicTyping: false, // teniamo stringhe, convertiamo noi
           skipEmptyLines: true,
-          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields }),
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
           error: (err) => reject(err)
         });
       });
@@ -255,7 +342,7 @@
             tooltip: {
               callbacks: {
                 title: ctx => ctx[0]?.label || '',
-                label: ctx => `${label}: ${ctx.parsed.y}`
+                label: ctx => `${prettyLabel(label)}: ${ctx.parsed.y}`
               }
             }
           }
@@ -264,23 +351,22 @@
     }
 
     function updateTitles() {
-      t1.textContent = sel1.value || 'Grafico 1';
-      t2.textContent = sel2.value || 'Grafico 2';
-      t3.textContent = sel3.value || 'Grafico 3';
+      t1.textContent = prettyLabel(sel1.value) || 'Grafico 1';
+      t2.textContent = prettyLabel(sel2.value) || 'Grafico 2';
+      t3.textContent = prettyLabel(sel3.value) || 'Grafico 3';
     }
 
     function filterAndDraw() {
-      if (!DATA.length) return;
+      if (!ROWS.length) return;
       const thr = windowThreshold(selWin.value);
-      const rows = (thr>0) ? DATA.filter(r => Date.parse(r.ts || r.timestamp || 0) >= thr) : DATA.slice();
+      const rows = (thr>0) ? ROWS.filter(r => Date.parse(r.ts) >= thr) : ROWS.slice();
 
-      // labels
-      const labels = rows.map(r => fmtTs(r.ts || r.timestamp || ''));
+      const labels = rows.map(r => fmtTsISO(r.ts));
 
       const drawOne = (sel, canvasId) => {
         const key = sel.value;
         if (!key) return;
-        const vals = rows.map(r => (r[key] ?? null));
+        const vals = rows.map(r => toNumber(r[key]));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
       };
 
@@ -292,8 +378,8 @@
       // footer info
       countEl.textContent = `• punti: ${rows.length}`;
       if (rows.length) {
-        const a = rows[0].ts || rows[0].timestamp, b = rows[rows.length-1].ts || rows[rows.length-1].timestamp;
-        tsRangeEl.textContent = `• intervallo: ${fmtTs(a)} → ${fmtTs(b)}`;
+        const a = rows[0].ts, b = rows[rows.length-1].ts;
+        tsRangeEl.textContent = `• intervallo: ${fmtTsISO(a)} → ${fmtTsISO(b)}`;
       } else {
         tsRangeEl.textContent = '';
       }
@@ -305,19 +391,26 @@
         savePrefs();
         const url = inpSrc.value.trim();
         openCsv.href = url;
+
         const { rows, fields } = await fetchCsv(url);
         if (!fields?.length) throw new Error('CSV senza header');
-        // normalizza ts
-        DATA = rows.map(r => {
-          if (!r.ts && r.timestamp) r.ts = r.timestamp;
-          return r;
-        }).filter(r => r.ts); // richiede colonna temporale
-        HEAD = fields.includes('ts') ? fields : ['ts', ...fields.filter(f => f!=='timestamp')];
+
+        const tf = detectTimeColumn(fields, rows);
+        if (!tf) throw new Error('Colonna tempo non trovata (attese: ' + TIME_CANDS.join(', ') + ')');
+        TIME_COL = tf;
+
+        const normalized = normalizeRows(rows, TIME_COL);
+        if (!normalized.length) throw new Error('Nessuna riga con timestamp valido');
+        ROWS = normalized;
+
+        METRIC_COLS = detectNumericColumns(fields, ROWS, TIME_COL);
+        if (!METRIC_COLS.length) throw new Error('Nessuna colonna numerica da graficare');
+
         populateMetricSelects();
         filterAndDraw();
       } catch (e) {
         console.error(e);
-        showToast('Errore caricamento CSV: ' + (e.message || e));
+        showToast('Errore: ' + (e.message || e));
       } finally {
         setBtnBusy(false);
       }
