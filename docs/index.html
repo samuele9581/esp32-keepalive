@@ -114,19 +114,30 @@
 
     const LS = { url:'hist.url', m1:'hist.m1', m2:'hist.m2', m3:'hist.m3', win:'hist.win' };
 
-    // Etichette "umane" (puoi personalizzarle qui)
+    // Etichette "umane"
     const LABELS = {
-      t_air_ds:'T. aria °C', t_soil_ds:'T. suolo °C',
-      sens_suolo_anal1:'Umidità terreno A1 %', sens_suolo_anal2:'Umidità terreno A2 %',
-      soil1:'Umidità terreno 1 %', soil2:'Umidità terreno 2 %',
-      bme_t:'BME Temp °C', bme_rh:'BME UR %', bme_p:'BME Press hPa',
+      t_air_ds:'T. aria', t_soil_ds:'T. suolo',
+      sens_suolo_anal1:'Umidità terreno A1', sens_suolo_anal2:'Umidità terreno A2',
+      soil1:'Umidità terreno 1', soil2:'Umidità terreno 2',
+      bme_t:'BME Temp', bme_rh:'BME UR', bme_p:'BME Press',
       bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ statico', bme_iaq_acc:'BME IAQ acc',
-      bme_co2eq:'BME CO₂eq ppm', bme_voc:'BME VOCeq ppb', bme_gas_pct:'BME Gas %', bme_gas_raw:'BME Gas Ω',
-      flow_lph:'Flusso L/h', flow_total:'Totale L',
-      vpv:'VPV', ppv:'Potenza PV W', vbat:'VBAT',
+      bme_co2eq:'BME CO₂eq', bme_voc:'BME VOCeq', bme_gas_pct:'BME Gas %', bme_gas_raw:'BME Gas Ω',
+      flow_lph:'Flusso', flow_total:'Totale',
+      vpv:'VPV', ppv:'Potenza PV', vbat:'VBAT',
       rain:'Pioggia', motion:'Movimento', valve1:'Valvola 1', valve2:'Valvola 2'
     };
-    const prettyLabel = k => LABELS[k] || k;
+    const UNITS = {
+      t_air_ds:'°C', t_soil_ds:'°C',
+      sens_suolo_anal1:'%', sens_suolo_anal2:'%', soil1:'%', soil2:'%',
+      bme_t:'°C', bme_rh:'%', bme_p:'hPa',
+      bme_co2eq:'ppm', bme_voc:'bVOCe',
+      bme_gas_pct:'%', vbat:'V', vpv:'V', ppv:'W',
+      flow_lph:'L/h', flow_total:'L'
+    };
+    const labelWithUnit = k => {
+      const name = LABELS[k] || k;
+      return UNITS[k] ? `${name} (${UNITS[k]})` : name;
+    };
 
     // candidati colonna tempo
     const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
@@ -147,58 +158,27 @@
     const toast = document.getElementById('toast');
 
     // === State ===
-    const CH = {};           // registrazione grafici
-    let ROWS = [];           // righe normalizzate
-    let METRIC_COLS = [];    // solo colonne numeriche
-    let TIME_COL = 'ts';     // nome colonna tempo effettiva nel CSV
+    const CH = {};
+    let ROWS = [];           // righe con ts normalizzato ISO
+    let METRIC_COLS = [];    // colonne numeriche disponibili
+    let TIME_COL = 'ts';
 
-// --- Unità e validazione ---
-const UNITS = {
-  bme_t: '°C', bme_rh: '%', bme_p: 'hPa',
-  bme_co2eq: 'ppm', bme_voc: 'bVOCe',
-  bme_gas_pct: '%', vbat: 'V', vpv: 'V', ppv: 'W',
-  flow_lph: 'L/h', flow_total: 'L'
-};
-
-function titleFor(key){ return UNITS[key] ? `${key} (${UNITS[key]})` : key; }
-
-function between(x, a, b){
-  return typeof x === 'number' && isFinite(x) && x >= a && x <= b;
-}
-
-// riga "sana" secondo range plausibili dei BME/BSEC
-function isRowSane(r){
-  const ok =
-    between(r.bme_t, -20, 80) &&
-    between(r.bme_rh, 0, 100) &&
-    between(r.bme_p, 850, 1100) &&
-    between(r.bme_iaq, 0, 500) &&
-    between(r.bme_static_iaq, 0, 500) &&
-    between(r.bme_co2eq, 300, 5000) &&
-    between(r.bme_voc, 0, 10) &&
-    between(r.bme_gas_pct, 0, 100);
-  return ok;
-}
-
-    
+    // --- utility ---
     function showToast(msg) {
       toast.textContent = msg;
       toast.style.display = 'block';
       clearTimeout(showToast._t);
       showToast._t = setTimeout(() => toast.style.display = 'none', 3200);
     }
-
     function setBtnBusy(b) {
       btnGo.disabled = b;
       btnGo.textContent = b ? 'Carico…' : 'Aggiorna';
     }
-
     function loadDefaults() {
       const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
       inpSrc.value = url;
       selWin.value = localStorage.getItem(LS.win) || '7d';
     }
-
     function savePrefs() {
       localStorage.setItem(LS.url, inpSrc.value.trim());
       localStorage.setItem(LS.m1, sel1.value || '');
@@ -206,7 +186,6 @@ function isRowSane(r){
       localStorage.setItem(LS.m3, sel3.value || '');
       localStorage.setItem(LS.win, selWin.value || '7d');
     }
-
     function toNumber(v) {
       if (v === null || v === undefined) return null;
       if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -215,22 +194,16 @@ function isRowSane(r){
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
-
     function parseEpochMaybe(v) {
       const n = toNumber(v);
       if (n == null) return null;
-      // euristica: secondi vs millisecondi
-      if (n > 1e12) return n;              // ms
-      if (n > 1e9)  return n * 1000;       // s
-      if (n > 1e6)  return n * 1000;       // s (short)
+      if (n > 1e12) return n;        // ms
+      if (n > 1e9)  return n * 1000; // sec
+      if (n > 1e6)  return n * 1000; // sec (short)
       return null;
     }
-
     function detectTimeColumn(fields, sampleRows) {
-      // 1) se il CSV contiene una delle keyword classiche, usa quella
       for (const k of TIME_CANDS) if (fields.includes(k)) return k;
-      // 2) altrimenti cerca una colonna che sembri timestamp
-      // controlla prime 10 righe
       const checkRows = sampleRows.slice(0, 10);
       for (const f of fields) {
         let score = 0;
@@ -239,34 +212,27 @@ function isRowSane(r){
           if (v == null || v === '') continue;
           const iso = Date.parse(String(v));
           const ep  = parseEpochMaybe(v);
-          if (Number.isFinite(iso) || Number.isFinite(ep)) { score++; }
+          if (Number.isFinite(iso) || Number.isFinite(ep)) score++;
         }
         if (score >= Math.ceil(checkRows.length * 0.5)) return f;
       }
       return null;
     }
-
     function normalizeRows(rows, timeField) {
       const out = [];
       for (const r of rows) {
-        let ms = null;
-        const v = r[timeField];
-        // prova epoch
-        ms = parseEpochMaybe(v);
+        let ms = parseEpochMaybe(r[timeField]);
         if (!Number.isFinite(ms)) {
-          // prova parse ISO/data
-          const p = Date.parse(String(v));
+          const p = Date.parse(String(r[timeField]));
           if (Number.isFinite(p)) ms = p;
         }
-        if (!Number.isFinite(ms)) continue; // scarta riga senza tempo valido
+        if (!Number.isFinite(ms)) continue;
         const rr = { ...r, ts: new Date(ms).toISOString() };
         out.push(rr);
       }
-      // ordina per tempo crescente
       out.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
       return out;
     }
-
     function detectNumericColumns(fields, rows, timeField) {
       const cols = [];
       for (const f of fields) {
@@ -277,39 +243,39 @@ function isRowSane(r){
           if (v === '' || v == null) continue;
           seen++;
           if (toNumber(v) != null) nums++;
-          if (seen >= 20) break; // basta un campione
+          if (seen >= 20) break;
         }
         if (nums > 0 && nums >= Math.max(3, Math.ceil(seen * 0.6))) cols.push(f);
       }
       return cols;
     }
-
     function fillSelect(sel, keys, prefKey, fallbackIndex=0) {
       sel.innerHTML = '';
       keys.forEach(k => {
         const o = document.createElement('option');
-        o.value = k; o.textContent = prettyLabel(k);
+        o.value = k; o.textContent = labelWithUnit(k);
         sel.appendChild(o);
       });
       const pref = localStorage.getItem(prefKey);
       if (pref && keys.includes(pref)) sel.value = pref;
       else if (keys[fallbackIndex]) sel.value = keys[fallbackIndex];
     }
-
     function populateMetricSelects() {
+      if (!METRIC_COLS.length) {
+        sel1.innerHTML = sel2.innerHTML = sel3.innerHTML = '';
+        showToast('Nessuna colonna numerica trovata nel CSV.');
+        return;
+      }
       fillSelect(sel1, METRIC_COLS, LS.m1, 0);
       fillSelect(sel2, METRIC_COLS, LS.m2, 1);
       fillSelect(sel3, METRIC_COLS, LS.m3, 2);
     }
-
-    // Calcola timestamp soglia
     function windowThreshold(id) {
       const now = Date.now();
       const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
       if (id === 'all' || !map[id]) return 0;
       return now - map[id]*60*60*1000;
     }
-
     function fmtTsISO(iso) {
       try {
         const d = new Date(iso);
@@ -317,17 +283,34 @@ function isRowSane(r){
       } catch { return iso; }
     }
 
-    // Carica CSV
+    // --- ranges per “pulire” valori improbabili SOLO in grafico ---
+    const RANGES = {
+      bme_t:[-20,80], bme_rh:[0,100], bme_p:[850,1100],
+      bme_iaq:[0,500], bme_static_iaq:[0,500],
+      bme_co2eq:[300,5000], bme_voc:[0,10], bme_gas_pct:[0,100]
+    };
+    const inRange = (x,a,b)=> typeof x==='number' && isFinite(x) && x>=a && x<=b;
+    const sanitize = (k,v)=>{
+      const n = toNumber(v);
+      if (n==null) return null;
+      if (RANGES[k]) {
+        const [a,b]=RANGES[k];
+        return inRange(n,a,b) ? n : null; // fuori range → buco nel grafico
+      }
+      return n;
+    };
+
+    // --- CSV loader ---
     async function fetchCsv(url) {
       const u = new URL(url);
-      u.searchParams.set('t', String(Date.now())); // cache-buster
+      u.searchParams.set('t', String(Date.now()));
       const res = await fetch(u.toString(), { cache:'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const txt = await res.text();
       return new Promise((resolve, reject) => {
         Papa.parse(txt, {
           header: true,
-          dynamicTyping: false, // teniamo stringhe, convertiamo noi
+          dynamicTyping: false,  // converto io
           skipEmptyLines: true,
           complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
           error: (err) => reject(err)
@@ -335,6 +318,7 @@ function isRowSane(r){
       });
     }
 
+    // --- Chart helpers ---
     function renderChart(canvasId, chartConfig) {
       const canvas = document.getElementById(canvasId);
       if (!canvas) return;
@@ -342,8 +326,8 @@ function isRowSane(r){
       CH[canvasId] = new Chart(canvas.getContext('2d'), chartConfig);
       return CH[canvasId];
     }
-
-    function buildLineConfig(labels, values, label) {
+    function buildLineConfig(labels, values, key) {
+      const label = labelWithUnit(key);
       return {
         type: 'line',
         data: {
@@ -371,21 +355,20 @@ function isRowSane(r){
             tooltip: {
               callbacks: {
                 title: ctx => ctx[0]?.label || '',
-                label: ctx => `${prettyLabel(label)}: ${ctx.parsed.y}`
+                label: ctx => `${label}: ${ctx.parsed.y}`
               }
             }
           }
         }
       };
     }
+    function updateTitles() {
+      t1.textContent = sel1.value ? labelWithUnit(sel1.value) : 'Grafico 1';
+      t2.textContent = sel2.value ? labelWithUnit(sel2.value) : 'Grafico 2';
+      t3.textContent = sel3.value ? labelWithUnit(sel3.value) : 'Grafico 3';
+    }
 
-function updateTitles() {
-  t1.textContent = sel1.value ? titleFor(sel1.value) : 'Grafico 1';
-  t2.textContent = sel2.value ? titleFor(sel2.value) : 'Grafico 2';
-  t3.textContent = sel3.value ? titleFor(sel3.value) : 'Grafico 3';
-}
-
-
+    // --- draw ---
     function filterAndDraw() {
       if (!ROWS.length) return;
       const thr = windowThreshold(selWin.value);
@@ -396,7 +379,7 @@ function updateTitles() {
       const drawOne = (sel, canvasId) => {
         const key = sel.value;
         if (!key) return;
-        const vals = rows.map(r => toNumber(r[key]));
+        const vals = rows.map(r => sanitize(key, r[key]));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
       };
 
@@ -415,6 +398,7 @@ function updateTitles() {
       }
     }
 
+    // --- refresh ---
     async function refreshAll() {
       try {
         setBtnBusy(true);
@@ -423,27 +407,31 @@ function updateTitles() {
         openCsv.href = url;
 
         const { rows, fields } = await fetchCsv(url);
-if (!fields?.length) throw new Error('CSV senza header');
+        if (!fields.length) throw new Error('CSV senza header');
 
-// normalizza timestamp
-const all = rows.map(r => {
-  if (!r.ts && r.timestamp) r.ts = r.timestamp;
-  return r;
-}).filter(r => r.ts);
+        // 1) trova colonna tempo
+        const timeField = detectTimeColumn(fields, rows);
+        if (!timeField) throw new Error('Non trovo la colonna del tempo (ts/timestamp/epoch/...)');
+        TIME_COL = timeField;
 
-// filtra righe incoerenti (schema rotto)
-const sane = all.filter(isRowSane);
-const dropped = all.length - sane.length;
+        // 2) normalizza righe con ts ISO
+        ROWS = normalizeRows(rows, TIME_COL);
 
-DATA = sane;
-HEAD = fields.includes('ts') ? fields : ['ts', ...fields.filter(f => f !== 'timestamp')];
+        // 3) individua colonne numeriche per i menu
+        METRIC_COLS = detectNumericColumns(fields, rows, TIME_COL);
 
-populateMetricSelects();
-filterAndDraw();
+        // 4) popola menu + disegna
+        populateMetricSelects();
+        filterAndDraw();
 
-if (dropped > 0) {
-  showToast(`Scartate ${dropped} righe anomale (schema incoerente).`);
-}
+        if (!METRIC_COLS.length) showToast('Attenzione: nessuna metrica numerica rilevata nel CSV.');
+      } catch (e) {
+        console.error(e);
+        showToast('Errore caricamento CSV: ' + (e.message || e));
+      } finally {
+        setBtnBusy(false);
+      }
+    }
 
     // === Eventi ===
     btnGo.addEventListener('click', refreshAll);
