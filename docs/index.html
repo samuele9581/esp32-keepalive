@@ -116,32 +116,19 @@
 
     // Etichette "umane"
     const LABELS = {
-      t_air_ds:'T. aria °C', t_soil_ds:'T. suolo °C',
-      sens_suolo_anal1:'Umidità terreno A1 %', sens_suolo_anal2:'Umidità terreno A2 %',
-      soil1:'Umidità terreno 1 %', soil2:'Umidità terreno 2 %',
-      bme_t:'BME Temp °C', bme_rh:'BME UR %', bme_p:'BME Press hPa',
+      t_air_ds:'T. aria (°C)', t_soil_ds:'T. suolo (°C)',
+      sens_suolo_anal1:'Umidità terreno A1 (%)', sens_suolo_anal2:'Umidità terreno A2 (%)',
+      soil1:'Umidità terreno 1 (%)', soil2:'Umidità terreno 2 (%)',
+      bme_t:'BME Temp (°C)', bme_rh:'BME UR (%)', bme_p:'BME Press (hPa)',
       bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ statico', bme_iaq_acc:'BME IAQ acc',
-      bme_co2eq:'BME CO₂eq ppm', bme_voc:'BME VOCeq', bme_gas_pct:'BME Gas %', bme_gas_raw:'BME Gas Ω',
-      flow_lph:'Flusso L/h', flow_total:'Totale L',
-      vpv:'VPV', ppv:'Potenza PV W', vbat:'VBAT',
+      bme_co2eq:'BME CO₂eq (ppm)', bme_voc:'BME VOCeq', bme_gas_pct:'BME Gas (%)', bme_gas_raw:'BME Gas (Ω)',
+      flow_lph:'Flusso (L/h)', flow_total:'Totale (L)',
+      vpv:'VPV', ppv:'Potenza PV (W)', vbat:'VBAT',
       rain:'Pioggia', motion:'Movimento', valve1:'Valvola 1', valve2:'Valvola 2'
     };
-    const prettyLabel = k => LABELS[k] || k;
+    const pretty = k => LABELS[k] || k;
 
-    // Candidati della colonna tempo
     const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
-
-    // Unità e range per filtri "soft" per metrica
-    const UNITS = {
-      bme_t:'°C', bme_rh:'%', bme_p:'hPa',
-      bme_co2eq:'ppm', bme_voc:'bVOCe', bme_iaq:'', bme_static_iaq:'',
-      bme_gas_pct:'%', vbat:'V', vpv:'V', ppv:'W', flow_lph:'L/h', flow_total:'L'
-    };
-    const RANGES = {
-      bme_t:[-20,80], bme_rh:[0,100], bme_p:[850,1100],
-      bme_iaq:[0,500], bme_static_iaq:[0,500],
-      bme_co2eq:[300,5000], bme_voc:[0,10], bme_gas_pct:[0,100]
-    };
 
     // === UI refs ===
     const sel1 = document.getElementById('m1');
@@ -161,183 +148,207 @@
     // === State ===
     const CH = {};
     let ROWS = [];
-    let HEAD = [];
-    let TIME_COL = 'ts';
     let METRIC_COLS = [];
 
-    // --- util ---
-    function showToast(msg){ toast.textContent = msg; toast.style.display='block'; clearTimeout(showToast._t); showToast._t=setTimeout(()=>toast.style.display='none',3200); }
-    function setBtnBusy(b){ btnGo.disabled=b; btnGo.textContent=b?'Carico…':'Aggiorna'; }
-    function loadDefaults(){ inpSrc.value = localStorage.getItem(LS.url) || CSV_URL_DEFAULT; selWin.value = localStorage.getItem(LS.win) || '7d'; }
-    function savePrefs(){
-      localStorage.setItem(LS.url, inpSrc.value.trim());
-      localStorage.setItem(LS.m1, sel1.value||'');
-      localStorage.setItem(LS.m2, sel2.value||'');
-      localStorage.setItem(LS.m3, sel3.value||'');
-      localStorage.setItem(LS.win, selWin.value||'7d');
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toast.style.display = 'none', 3200);
     }
-    const unitOf = k => UNITS[k] ? ` (${UNITS[k]})` : '';
-    const titleFor = k => prettyLabel(k) + unitOf(k);
 
-    function toNumber(v){
-      if (v===null || v===undefined) return null;
-      if (typeof v==='number') return Number.isFinite(v)?v:null;
+    function setBtnBusy(b) {
+      btnGo.disabled = b;
+      btnGo.textContent = b ? 'Carico…' : 'Aggiorna';
+    }
+
+    function loadDefaults() {
+      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
+      inpSrc.value = url;
+      selWin.value = localStorage.getItem(LS.win) || '7d';
+    }
+
+    function savePrefs() {
+      localStorage.setItem(LS.url, inpSrc.value.trim());
+      localStorage.setItem(LS.m1, sel1.value || '');
+      localStorage.setItem(LS.m2, sel2.value || '');
+      localStorage.setItem(LS.m3, sel3.value || '');
+      localStorage.setItem(LS.win, selWin.value || '7d');
+    }
+
+    // ---- parsing util ----
+    function toNumber(v) {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
       const s = String(v).trim().replace(',', '.');
-      if (s==='' || s.toLowerCase()==='nan') return null;
+      if (!s || s.toLowerCase() === 'nan') return null;
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
 
-    function sanitizeMetric(key, n){
-      if (n==null) return null;
-      const rg = RANGES[key];
-      if (!rg) return n; // niente range -> accetta
-      const [a,b] = rg;
-      return (n>=a && n<=b) ? n : null; // se fuori range, buco
-    }
-
-    function parseEpochMaybe(v){
-      const n = toNumber(v);
-      if (n==null) return null;
-      if (n > 1e12) return n;        // millisecondi
-      if (n > 1e9)  return n*1000;   // secondi
-      if (n > 1e6)  return n*1000;   // secondi (short)
-      return null;
-    }
-
-    function detectTimeColumn(fields, sampleRows){
-      for (const k of TIME_CANDS) if (fields.includes(k)) return k;
-      const checkRows = sampleRows.slice(0,10);
-      for (const f of fields){
-        let score=0;
-        for (const r of checkRows){
-          const v = r[f];
-          if (v==null || v==='') continue;
-          const iso = Date.parse(String(v));
-          const ep  = parseEpochMaybe(v);
-          if (Number.isFinite(iso) || Number.isFinite(ep)) score++;
-        }
-        if (score >= Math.ceil(checkRows.length*0.5)) return f;
+    function parseTs(v) {
+      if (v == null) return null;
+      const s = String(v).trim();
+      // epoch?
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        if (n > 1e12) return n;        // ms
+        if (n > 1e9)  return n*1000;   // s
       }
-      return fields[0] || null;
+      const p = Date.parse(s);
+      return Number.isFinite(p) ? p : null;
     }
 
-    function normalizeRows(rows, timeField){
-      const out=[];
-      for (const r of rows){
-        let ms = parseEpochMaybe(r[timeField]);
-        if (!Number.isFinite(ms)){
-          const p = Date.parse(String(r[timeField]));
-          if (Number.isFinite(p)) ms=p;
-        }
-        if (!Number.isFinite(ms)) continue;
-        out.push({ ...r, ts:new Date(ms).toISOString() });
+    // bounds molto larghi + sanitizzazione per colonna (non scarta la riga)
+    const BOUNDS = {
+      bme_t:[-40, 85],
+      bme_rh:[0, 100],
+      bme_p:[300, 1100],
+      bme_iaq:[0, 1000],
+      bme_static_iaq:[0, 1000],
+      bme_iaq_acc:[0, 1000],
+      bme_co2eq:[250, 10000],     // CO2eq
+      bme_voc:[0, 200000],        // VOCeq (ppb o indice → largo)
+      bme_gas_pct:[0, 100]
+    };
+
+    function sanitizeRow(r) {
+      const rr = { ...r };
+      for (const [k,[a,b]] of Object.entries(BOUNDS)) {
+        if (rr[k] == null) continue;
+        const n = toNumber(rr[k]);
+        rr[k] = (n != null && n >= a && n <= b) ? n : null;
       }
-      out.sort((a,b)=>Date.parse(a.ts)-Date.parse(b.ts));
-      return out;
-    }
-
-    function detectNumericColumns(fields, rows, timeField){
-      const cols=[];
-      for (const f of fields){
-        if (f===timeField) continue;
-        let seen=0, nums=0;
-        for (const r of rows){
-          const v = r[f];
-          if (v==='' || v==null) continue;
-          seen++;
-          if (toNumber(v)!=null) nums++;
-          if (seen>=20) break;
+      // converti tutti gli altri numeri dove possibile
+      for (const k of Object.keys(rr)) {
+        if (k === 'ts') continue;
+        if (rr[k] !== null && typeof rr[k] !== 'number') {
+          const n = toNumber(rr[k]);
+          rr[k] = n;
         }
-        if (nums>0 && nums >= Math.max(3, Math.ceil(seen*0.5))) cols.push(f);
       }
-      return cols;
+      return rr;
     }
 
-    // --- fetch CSV ---
-    async function fetchCsv(url){
-      const u = new URL(url); u.searchParams.set('t', String(Date.now()));
+    // ---- UI helpers ----
+    function windowThreshold(id) {
+      const now = Date.now();
+      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
+      if (id === 'all' || !map[id]) return 0;
+      return now - map[id]*60*60*1000;
+    }
+
+    function fmtTsISO(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      } catch { return iso; }
+    }
+
+    async function fetchCsv(url) {
+      const u = new URL(url);
+      u.searchParams.set('t', String(Date.now()));
       const res = await fetch(u.toString(), { cache:'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const txt = await res.text();
-      return new Promise((resolve,reject)=>{
+      return new Promise((resolve, reject) => {
         Papa.parse(txt, {
-          header:true, dynamicTyping:false, skipEmptyLines:true,
-          complete: ({data, meta}) => resolve({ rows:data, fields:meta.fields||[] }),
-          error: reject
+          header: true,
+          dynamicTyping: false,
+          skipEmptyLines: true,
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
+          error: (err) => reject(err)
         });
       });
     }
 
-    function renderChart(canvasId, cfg){
-      const canvas=document.getElementById(canvasId);
-      if (!canvas) return;
-      if (CH[canvasId]) { try{ CH[canvasId].destroy(); }catch{} }
-      CH[canvasId] = new Chart(canvas.getContext('2d'), cfg);
-      return CH[canvasId];
+    function detectTimeColumn(fields, sampleRows) {
+      for (const k of TIME_CANDS) if (fields.includes(k)) return k;
+      const check = sampleRows.slice(0, 10);
+      for (const f of fields) {
+        let ok = 0;
+        for (const r of check) {
+          const p = parseTs(r[f]);
+          if (Number.isFinite(p)) ok++;
+        }
+        if (ok >= Math.ceil(check.length*0.5)) return f;
+      }
+      return null;
     }
 
-    function buildLineConfig(labels, values, key){
+    function buildLineConfig(labels, values, key) {
       return {
-        type:'line',
-        data:{ labels, datasets:[{ label:prettyLabel(key)+unitOf(key), data:values, borderWidth:2, pointRadius:0, tension:0.25, spanGaps:true }]},
-        options:{
-          responsive:true, maintainAspectRatio:false, animation:false,
-          interaction:{ mode:'nearest', intersect:false },
-          scales:{ x:{ ticks:{ autoSkip:true, maxTicksLimit:8 } }, y:{ beginAtZero:false } },
-          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ title:ctx=>ctx[0]?.label||'', label:ctx=>`${prettyLabel(key)}: ${ctx.parsed.y}` } } }
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: pretty(key),
+            data: values,
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            spanGaps: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'nearest', intersect: false },
+          scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 8 } },
+            y: { beginAtZero: false }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: ctx => ctx[0]?.label || '',
+                label: ctx => `${pretty(key)}: ${ctx.parsed.y}`
+              }
+            }
+          }
         }
       };
     }
 
-    function updateTitles(){
-      t1.textContent = sel1.value ? prettyLabel(sel1.value)+unitOf(sel1.value) : 'Grafico 1';
-      t2.textContent = sel2.value ? prettyLabel(sel2.value)+unitOf(sel2.value) : 'Grafico 2';
-      t3.textContent = sel3.value ? prettyLabel(sel3.value)+unitOf(sel3.value) : 'Grafico 3';
+    function renderChart(canvasId, cfg) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      if (CH[canvasId]) { try { CH[canvasId].destroy(); } catch {} }
+      CH[canvasId] = new Chart(canvas.getContext('2d'), cfg);
+      return CH[canvasId];
     }
 
-    function windowThreshold(id){
-      const now = Date.now();
-      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
-      if (id==='all' || !map[id]) return 0;
-      return now - map[id]*60*60*1000;
-    }
-
-    function fmtTsISO(iso){
-      try{
-        const d=new Date(iso);
-        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
-      }catch{ return iso; }
-    }
-
-    function fillSelect(sel, keys, prefKey, fallbackIndex=0){
-      sel.innerHTML='';
-      keys.forEach(k=>{
-        const o=document.createElement('option');
-        o.value=k; o.textContent=prettyLabel(k)+unitOf(k);
+    function fillSelect(sel, keys, prefKey, fallbackIndex=0) {
+      sel.innerHTML = '';
+      keys.forEach(k => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = pretty(k);
         sel.appendChild(o);
       });
-      const pref=localStorage.getItem(prefKey);
-      if (pref && keys.includes(pref)) sel.value=pref;
-      else if (keys[fallbackIndex]) sel.value=keys[fallbackIndex];
+      const pref = localStorage.getItem(prefKey);
+      if (pref && keys.includes(pref)) sel.value = pref;
+      else if (keys[fallbackIndex]) sel.value = keys[fallbackIndex];
     }
 
-    function populateMetricSelects(){
-      fillSelect(sel1, METRIC_COLS, LS.m1, 0);
-      fillSelect(sel2, METRIC_COLS, LS.m2, 1);
-      fillSelect(sel3, METRIC_COLS, LS.m3, 2);
+    function updateTitles() {
+      t1.textContent = sel1.value ? pretty(sel1.value) : 'Grafico 1';
+      t2.textContent = sel2.value ? pretty(sel2.value) : 'Grafico 2';
+      t3.textContent = sel3.value ? pretty(sel3.value) : 'Grafico 3';
     }
 
-    function filterAndDraw(){
+    function filterAndDraw() {
       if (!ROWS.length) return;
       const thr = windowThreshold(selWin.value);
       const rows = (thr>0) ? ROWS.filter(r => Date.parse(r.ts) >= thr) : ROWS.slice();
+
       const labels = rows.map(r => fmtTsISO(r.ts));
 
       const drawOne = (sel, canvasId) => {
         const key = sel.value;
         if (!key) return;
-        const vals = rows.map(r => sanitizeMetric(key, toNumber(r[key])));
+        const vals = rows.map(r => (typeof r[key] === 'number' ? r[key] : null));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
       };
 
@@ -347,38 +358,55 @@
       drawOne(sel3, 'c3');
 
       countEl.textContent = `• punti: ${rows.length}`;
-      if (rows.length){
-        const a=rows[0].ts, b=rows[rows.length-1].ts;
+      if (rows.length) {
+        const a = rows[0].ts, b = rows[rows.length-1].ts;
         tsRangeEl.textContent = `• intervallo: ${fmtTsISO(a)} → ${fmtTsISO(b)}`;
-      }else{
-        tsRangeEl.textContent='';
+      } else {
+        tsRangeEl.textContent = '';
       }
     }
 
-    async function refreshAll(){
-      try{
+    async function refreshAll() {
+      try {
         setBtnBusy(true);
         savePrefs();
+
         const url = inpSrc.value.trim();
         openCsv.href = url;
 
         const { rows, fields } = await fetchCsv(url);
         if (!fields.length) throw new Error('CSV senza header');
 
-        // rileva colonna tempo e normalizza
-        TIME_COL = detectTimeColumn(fields, rows);
-        const normalized = normalizeRows(rows, TIME_COL);
+        // rileva colonna tempo
+        const timeField = detectTimeColumn(fields, rows) || 'ts';
 
-        ROWS = normalized;
-        HEAD = fields;
-        METRIC_COLS = detectNumericColumns(HEAD, ROWS, TIME_COL);
+        // normalizza righe (NON scartiamo più le righe per out-of-range)
+        const norm = [];
+        for (const r of rows) {
+          const p = parseTs(r[timeField] ?? r.ts ?? r.timestamp);
+          if (!Number.isFinite(p)) continue;
+          const rr = sanitizeRow({ ...r, ts: new Date(p).toISOString() });
+          norm.push(rr);
+        }
+        norm.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
+        ROWS = norm;
 
-        populateMetricSelects();
+        // colonne metriche = tutte tranne ts, che hanno almeno qualche numero
+        const keys = new Set();
+        ROWS.forEach(r => Object.keys(r).forEach(k => { if (k!=='ts') keys.add(k); }));
+        METRIC_COLS = [...keys].filter(k => ROWS.some(r => typeof r[k] === 'number'));
+
+        if (!METRIC_COLS.length) throw new Error('Nessuna colonna numerica trovata');
+
+        fillSelect(sel1, METRIC_COLS, LS.m1, 0);
+        fillSelect(sel2, METRIC_COLS, LS.m2, 1);
+        fillSelect(sel3, METRIC_COLS, LS.m3, 2);
+
         filterAndDraw();
-      }catch(e){
+      } catch (e) {
         console.error(e);
         showToast('Errore caricamento CSV: ' + (e.message || e));
-      }finally{
+      } finally {
         setBtnBusy(false);
       }
     }
