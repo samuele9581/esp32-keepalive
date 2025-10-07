@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Storico ESP32 – Grafici (via GitHub Actions)</title>
 
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Papa Parse (CSV robusto) -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    :root { --bg:#0f1222; --panel:#171a2e; --txt:#e7e9f7; --muted:#95a0c6; --accent:#7aa2ff; --ok:#58d68d; --warn:#f5d76e; --bad:#ff8a8a;}
+    :root { --bg:#0f1222; --panel:#171a2e; --txt:#e7e9f7; --muted:#95a0c6; --accent:#7aa2ff; }
     * { box-sizing: border-box; }
     html,body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:16px/1.35 system-ui,Segoe UI,Roboto,Helvetica,Arial; }
     header { position:sticky; top:0; z-index:3; background:linear-gradient(180deg, rgba(23,26,46,.98), rgba(23,26,46,.92)); padding:14px 16px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
@@ -18,41 +20,22 @@
     .panel { background:var(--panel); border-radius:16px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,.25); }
     .controls { display:flex; flex-wrap:wrap; gap:10px 12px; align-items:center; }
     .controls label { font-size:14px; color:var(--muted); margin-right:6px; }
-    select, input[type="text"] { background:#0f1230; color:var(--txt); border:1px solid #2a2f55; border-radius:10px; padding:10px 12px; min-width:160px; outline:none; }
+    select, input[type="text"] {
+      background:#0f1230; color:var(--txt); border:1px solid #2a2f55; border-radius:10px; padding:10px 12px; min-width:160px;
+      outline:none;
+    }
     button { background:var(--accent); color:#0b1022; border:0; border-radius:12px; padding:10px 14px; font-weight:600; cursor:pointer; }
     button[disabled]{ opacity:.6; cursor:not-allowed; }
     .src { margin-left:auto; display:flex; gap:8px; align-items:center; flex:1 1 320px; min-width:260px; }
     .src input{ width:100%; }
     .row { margin-top:16px; display:grid; grid-template-columns:1fr; gap:14px; }
     @media (min-width:900px){ .row { grid-template-columns:1fr 1fr 1fr; } }
-    .card { background:#0f1230; border:1px solid #2a2f55; border-radius:14px; padding:12px; }
+    .card { background:#0f1230; border:1px solid #2a2f55; border-radius:14px; padding:12px; height:320px; }
     .card h3{ margin:0 0 8px; font-size:14px; color:var(--muted); font-weight:600; }
     canvas { width:100% !important; height:260px !important; }
     .foot { margin-top:18px; color:var(--muted); font-size:13px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     a { color:var(--accent); text-decoration:none; }
-    .meta { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; font-size:12px; color:var(--muted); }
     .toast{ position:fixed; right:16px; bottom:16px; background:#1b2246; color:var(--txt); border:1px solid #33407a; padding:10px 12px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
-    /* Diagnostica */
-    .diag { margin-top:18px; }
-    .diag h2 { margin:6px 0 10px; font-size:16px; color:var(--muted); }
-    table { width:100%; border-collapse: collapse; background:#0f1230; border:1px solid #2a2f55; border-radius:12px; overflow:hidden; }
-    thead th { text-align:left; font-size:12px; color:var(--muted); padding:10px; background:#11153a; }
-    tbody td { padding:10px; border-top:1px solid #232a55; font-size:13px; }
-    tbody tr:hover { background:#0e1333; }
-    .ok { color:var(--ok); font-weight:600; }
-    .warn { color:var(--warn); font-weight:600; }
-    .bad { color:var(--bad); font-weight:700; }
-    .legend { margin-top:8px; font-size:12px; color:var(--muted); display:flex; gap:18px; flex-wrap:wrap; }
-
-    /* Modal mappatura */
-    .modal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.5); z-index:50; }
-    .modal .box { background:#0f1230; border:1px solid #2a2f55; border-radius:16px; width:min(1000px, 96%); max-height:90vh; overflow:auto; padding:16px; }
-    .modal h3 { margin:0 0 10px; font-size:16px; color:var(--muted); }
-    .map-table { width:100%; border-collapse:collapse; }
-    .map-table th, .map-table td { padding:8px; border-top:1px solid #232a55; font-size:13px; }
-    .map-table thead th { background:#11153a; position:sticky; top:0; z-index:1; }
-    .map-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
-    .pill { display:inline-block; padding:2px 6px; border:1px solid #2a2f55; border-radius:999px; background:#11153a; color:var(--muted); font-size:12px; }
   </style>
 </head>
 <body>
@@ -91,7 +74,7 @@
         </div>
 
         <button id="go">Aggiorna</button>
-        <button id="mapBtn" title="Mappa colonne CSV → metriche">Mappa colonne…</button>
+        <button id="resetData" title="Azzera dati locali e ricarica dal cloud (non tocca mappa colonne né preferenze)">Reset dati</button>
 
         <div class="src">
           <label for="src">Fonte:</label>
@@ -103,40 +86,14 @@
         <div class="card">
           <h3 id="t1">Grafico 1</h3>
           <canvas id="c1"></canvas>
-          <div class="meta" id="m1meta"></div>
         </div>
         <div class="card">
           <h3 id="t2">Grafico 2</h3>
           <canvas id="c2"></canvas>
-          <div class="meta" id="m2meta"></div>
         </div>
         <div class="card">
           <h3 id="t3">Grafico 3</h3>
           <canvas id="c3"></canvas>
-          <div class="meta" id="m3meta"></div>
-        </div>
-      </div>
-
-      <div class="diag">
-        <h2>Diagnostica (mismatch metriche)</h2>
-        <div id="cadenceInfo" class="legend"></div>
-        <table>
-          <thead>
-            <tr>
-              <th>Metrica</th>
-              <th>Ultimo (finestra)</th>
-              <th>Ultimo globale</th>
-              <th>Età ultimo</th>
-              <th>Copertura finestra</th>
-              <th>Stato</th>
-            </tr>
-          </thead>
-          <tbody id="diagBody"></tbody>
-        </table>
-        <div class="legend">
-          <span><b>OK</b>: aggiornamenti regolari</span>
-          <span><b class="warn">FUORI FINESTRA</b>: nessun dato recente nella finestra scelta</span>
-          <span><b class="bad">STALE</b>: ultimo dato troppo vecchio rispetto alla cadenza</span>
         </div>
       </div>
 
@@ -145,34 +102,6 @@
         <a id="openCsv" target="_blank" rel="noopener">Apri file</a>
         <span id="count"></span>
         <span id="tsRange"></span>
-        <span id="hdrInfo" class="pill"></span>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL MAPPATURA -->
-  <div id="mapModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="mapTitle">
-    <div class="box">
-      <h3 id="mapTitle">Mappa colonne CSV → metriche</h3>
-      <p style="margin:6px 0 10px; color:var(--muted);">
-        Se l’ordine o i nomi delle colonne del CSV non combaciano, assegna manualmente ogni colonna alla metrica corretta. La mappa viene salvata per questa sorgente.
-      </p>
-      <table class="map-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Nome colonna CSV</th>
-            <th>Esempio (ultima riga)</th>
-            <th>Assegna a metrica</th>
-          </tr>
-        </thead>
-        <tbody id="mapTBody"></tbody>
-      </table>
-      <div class="map-actions">
-        <button id="mapAuto">Auto-proposta</button>
-        <button id="mapClear">Cancella mappa</button>
-        <button id="mapClose">Chiudi</button>
-        <button id="mapApply">Applica</button>
       </div>
     </div>
   </div>
@@ -184,551 +113,368 @@
     const CSV_URL_DEFAULT =
       'https://raw.githubusercontent.com/samuele9581/esp32-keepalive/main/states/metrics.csv';
 
-    const LS = { url:'hist.url', m1:'hist.m1', m2:'hist.m2', m3:'hist.m3', win:'hist.win' };
+    // Preferenze UTENTE (NON includono mappa colonne: non la tocchiamo qui)
+    const LS = {
+      url: 'hist.url',
+      m1:  'hist.m1',
+      m2:  'hist.m2',
+      m3:  'hist.m3',
+      win: 'hist.win'
+    };
 
-    // Metriche note (puoi ampliarle/modificarle)
-    const METRICS = [
-      't_air_ds','t_soil_ds','sens_suolo_anal1','sens_suolo_anal2',
-      'soil1','soil2',
-      'bme_t','bme_rh','bme_p','bme_iaq','bme_static_iaq','bme_iaq_acc','bme_co2eq','bme_voc','bme_gas_pct','bme_gas_raw',
-      'flow_lph','flow_total',
-      'vpv','ppv','vbat',
-      'rain','motion','valve1','valve2',
-      'epoch'
-    ];
+    // Etichette "umane"
     const LABELS = {
-      t_air_ds:'T aria DS (°C)', t_soil_ds:'T suolo DS (°C)',
-      sens_suolo_anal1:'Umidità terreno A1 (%)', sens_suolo_anal2:'Umidità terreno A2 (%)',
-      soil1:'Umidità terreno 1 (%)', soil2:'Umidità terreno 2 (%)',
-      bme_t:'BME Temp (°C)', bme_rh:'BME UR (%)', bme_p:'BME Press (hPa)',
+      t_air_ds:'T. aria °C', t_soil_ds:'T. suolo °C',
+      sens_suolo_anal1:'Umidità terreno A1 %', sens_suolo_anal2:'Umidità terreno A2 %',
+      soil1:'Umidità terreno 1 %', soil2:'Umidità terreno 2 %',
+      bme_t:'BME Temp °C', bme_rh:'BME UR %', bme_p:'BME Press hPa',
       bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ statico', bme_iaq_acc:'BME IAQ acc',
-      bme_co2eq:'BME CO₂eq (ppm)', bme_voc:'BME bVOCe (ppm)', bme_gas_pct:'BME Gas (%)', bme_gas_raw:'BME Gas (Ω)',
-      flow_lph:'Flusso (L/h)', flow_total:'Totale (L)',
-      vpv:'PV Volt (V)', ppv:'PV Watt (W)', vbat:'VBAT (V)',
-      rain:'Pioggia', motion:'Movimento', valve1:'Valvola 1', valve2:'Valvola 2',
-      epoch:'Epoch (s/ms)'
+      bme_co2eq:'BME CO₂eq ppm', bme_voc:'BME VOCeq ppb', bme_gas_pct:'BME Gas %', bme_gas_raw:'BME Gas Ω',
+      flow_lph:'Flusso L/h', flow_total:'Totale L',
+      vpv:'VPV', ppv:'Potenza PV W', vbat:'VBAT',
+      rain:'Pioggia', motion:'Movimento', valve1:'Valvola 1', valve2:'Valvola 2'
     };
     const prettyLabel = k => LABELS[k] || k;
 
-    const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
-
-    // UI refs
+    // === UI refs ===
     const sel1 = document.getElementById('m1');
     const sel2 = document.getElementById('m2');
     const sel3 = document.getElementById('m3');
     const selWin = document.getElementById('win');
     const btnGo = document.getElementById('go');
-    const mapBtn = document.getElementById('mapBtn');
+    const btnReset = document.getElementById('resetData');
     const inpSrc = document.getElementById('src');
     const openCsv = document.getElementById('openCsv');
     const t1 = document.getElementById('t1');
     const t2 = document.getElementById('t2');
     const t3 = document.getElementById('t3');
-    const m1meta = document.getElementById('m1meta');
-    const m2meta = document.getElementById('m2meta');
-    const m3meta = document.getElementById('m3meta');
     const countEl = document.getElementById('count');
     const tsRangeEl = document.getElementById('tsRange');
-    const hdrInfo = document.getElementById('hdrInfo');
     const toast = document.getElementById('toast');
-    const diagBody = document.getElementById('diagBody');
-    const cadenceInfo = document.getElementById('cadenceInfo');
 
-    // Modal refs
-    const mapModal = document.getElementById('mapModal');
-    const mapTBody = document.getElementById('mapTBody');
-    const mapApply = document.getElementById('mapApply');
-    const mapClose = document.getElementById('mapClose');
-    const mapClear = document.getElementById('mapClear');
-    const mapAuto = document.getElementById('mapAuto');
+    // === State ===
+    const CH = {};           // registrazione grafici
+    let ROWS = [];           // righe normalizzate
+    let HEAD = [];           // header del csv
+    let METRIC_COLS = [];    // colonne numeriche
+    const TIME_FIELD_CANDIDATES = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
+    let TIME_COL = 'ts';
 
-    // State
-    const CH = {};
-    let RAW_ROWS = [];        // righe come da CSV
-    let ROWS = [];            // righe normalizzate + mappate
-    let FIELDS = [];          // intestazioni CSV originali
-    let METRIC_COLS = [];     // colonne numeriche (già mappate)
-    let TIME_COL = 'ts';      // chiave tempo usata
-    let MAP = {};             // mappa colonnaCSV -> metrica
+    // --- Helpers ---
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toast.style.display = 'none', 3200);
+    }
 
-    // Helpers
-    const nowMs = () => Date.now();
-    const savePrefs = () => {
+    function setBtnBusy(b) {
+      btnGo.disabled = b;
+      btnReset.disabled = b;
+      btnGo.textContent = b ? 'Carico…' : 'Aggiorna';
+    }
+
+    function loadDefaults() {
+      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
+      inpSrc.value = url;
+      selWin.value = localStorage.getItem(LS.win) || '7d';
+    }
+
+    function savePrefs() {
       localStorage.setItem(LS.url, inpSrc.value.trim());
       localStorage.setItem(LS.m1, sel1.value || '');
       localStorage.setItem(LS.m2, sel2.value || '');
       localStorage.setItem(LS.m3, sel3.value || '');
       localStorage.setItem(LS.win, selWin.value || '7d');
-      saveMapForUrl(inpSrc.value.trim(), MAP);
-    };
-    function loadDefaults(){
-      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
-      inpSrc.value = url;
-      selWin.value = localStorage.getItem(LS.win) || '7d';
-      MAP = loadMapForUrl(url) || {};
     }
 
-    function showToast(msg){ toast.textContent = msg; toast.style.display='block'; clearTimeout(showToast._t); showToast._t=setTimeout(()=>toast.style.display='none',3200); }
-    function setBtnBusy(b){ btnGo.disabled=b; btnGo.textContent = b ? 'Carico…' : 'Aggiorna'; }
-
-    // LocalStorage Mapping
-    const mapKeyForUrl = (url) => 'hist.map::'+encodeURIComponent(url);
-    function loadMapForUrl(url){
-      try { const raw = localStorage.getItem(mapKeyForUrl(url)); return raw ? JSON.parse(raw) : null; } catch { return null; }
-    }
-    function saveMapForUrl(url, map){
-      try { localStorage.setItem(mapKeyForUrl(url), JSON.stringify(map||{})); } catch {}
-    }
-    function clearMapForUrl(url){
-      try { localStorage.removeItem(mapKeyForUrl(url)); } catch {}
-    }
-
-    // Number parsing
-    function toNumber(v){
+    function toNumber(v) {
       if (v === null || v === undefined) return null;
       if (typeof v === 'number') return Number.isFinite(v) ? v : null;
       const s = String(v).trim().replace(',', '.');
-      if (!s || s.toLowerCase()==='nan') return null;
+      if (s === '' || s.toLowerCase() === 'nan') return null;
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
 
-    // Time parsing
-    function parseEpochMaybe(v){
+    function parseEpochMaybe(v) {
       const n = toNumber(v);
       if (n == null) return null;
-      if (n > 1e12) return n;       // ms
-      if (n > 1e9)  return n*1000;  // s
-      if (n > 1e6)  return n*1000;  // s (short)
+      if (n > 1e12) return n;        // ms
+      if (n > 1e9)  return n * 1000; // s
+      if (n > 1e6)  return n * 1000; // s (short)
       return null;
     }
-    function detectTimeColumn(fields, sampleRows){
-      for (const k of TIME_CANDS) if (fields.includes(k)) return k;
-      const check = sampleRows.slice(0,10);
-      for (const f of fields){
-        let ok=0;
-        for (const r of check){
+
+    function detectTimeColumn(fields, sampleRows) {
+      for (const k of TIME_FIELD_CANDIDATES) if (fields.includes(k)) return k;
+      const checkRows = sampleRows.slice(0, 10);
+      for (const f of fields) {
+        let score = 0;
+        for (const r of checkRows) {
           const v = r[f];
-          if (v==null || v==='') continue;
-          if (Number.isFinite(Date.parse(String(v))) || Number.isFinite(parseEpochMaybe(v))) ok++;
+          if (v == null || v === '') continue;
+          const iso = Date.parse(String(v));
+          const ep  = parseEpochMaybe(v);
+          if (Number.isFinite(iso) || Number.isFinite(ep)) score++;
         }
-        if (ok >= Math.ceil(check.length*0.5)) return f;
+        if (score >= Math.ceil(checkRows.length * 0.5)) return f;
       }
       return null;
     }
-    function normalizeRows(rows, timeField){
-      const out=[];
-      for (const r of rows){
+
+    function normalizeRows(rows, timeField) {
+      const out = [];
+      for (const r of rows) {
         let ms = parseEpochMaybe(r[timeField]);
-        if (!Number.isFinite(ms)){
+        if (!Number.isFinite(ms)) {
           const p = Date.parse(String(r[timeField]));
-          if (Number.isFinite(p)) ms=p;
+          if (Number.isFinite(p)) ms = p;
         }
         if (!Number.isFinite(ms)) continue;
-        out.push({ ...r, ts: new Date(ms).toISOString() });
+        const rr = { ...r, ts: new Date(ms).toISOString() };
+        out.push(rr);
       }
-      out.sort((a,b)=>Date.parse(a.ts)-Date.parse(b.ts));
+      out.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
       return out;
     }
 
-    // Apply mapping: crea righe con chiavi "metriche" dai campi CSV
-    function applyMapping(rows, fields, map){
-      // reverse: metrica -> nomeColCsv
-      const rev = {};
-      for (const [csvCol, metric] of Object.entries(map||{})){
-        if (metric && metric !== '__ignore__') rev[metric] = csvCol;
-      }
-      return rows.map(r=>{
-        const out = { ts:r.ts }; // ts già normalizzato
-        for (const m of METRICS){
-          const col = rev[m];
-          if (col && col in r) out[m] = r[col];
-        }
-        return out;
-      });
-    }
-
-    function detectNumericColumns(fields, rows){
-      // dopo mapping: considera solo chiavi METRICS presenti
-      const cols=[];
-      const sampleKeys = new Set(Object.keys(rows[0] || {}));
-      for (const m of METRICS){
-        if (!sampleKeys.has(m)) continue;
-        let seen=0, nums=0;
-        for (const r of rows){
-          const v = r[m];
-          if (v === '' || v==null) continue;
+    function detectNumericColumns(fields, rows, timeField) {
+      const cols = [];
+      for (const f of fields) {
+        if (f === timeField) continue;
+        let seen = 0, nums = 0;
+        for (const r of rows) {
+          const v = r[f];
+          if (v === '' || v == null) continue;
           seen++;
-          if (toNumber(v)!=null) nums++;
-          if (seen>=30) break;
+          if (toNumber(v) != null) nums++;
+          if (seen >= 20) break;
         }
-        if (nums>0 && nums>=Math.max(3, Math.ceil(seen*0.5))) cols.push(m);
+        if (nums > 0 && nums >= Math.max(3, Math.ceil(seen * 0.6))) cols.push(f);
       }
       return cols;
     }
 
-    function fillSelect(sel, keys, prefKey, fallbackIndex=0){
-      sel.innerHTML='';
-      keys.forEach(k=>{
-        const o=document.createElement('option');
-        o.value=k; o.textContent=prettyLabel(k);
+    function fillSelect(sel, keys, prefKey, fallbackIndex=0) {
+      sel.innerHTML = '';
+      keys.forEach(k => {
+        const o = document.createElement('option');
+        o.value = k; o.textContent = prettyLabel(k);
         sel.appendChild(o);
       });
-      const pref=localStorage.getItem(prefKey);
-      if (pref && keys.includes(pref)) sel.value=pref;
-      else if (keys[fallbackIndex]) sel.value=keys[fallbackIndex];
+      const pref = localStorage.getItem(prefKey);
+      if (pref && keys.includes(pref)) sel.value = pref;
+      else if (keys[fallbackIndex]) sel.value = keys[fallbackIndex];
     }
-    function populateMetricSelects(){
+
+    function populateMetricSelects() {
+      if (!METRIC_COLS.length) {
+        sel1.innerHTML = sel2.innerHTML = sel3.innerHTML = '';
+        return;
+      }
       fillSelect(sel1, METRIC_COLS, LS.m1, 0);
       fillSelect(sel2, METRIC_COLS, LS.m2, 1);
       fillSelect(sel3, METRIC_COLS, LS.m3, 2);
-      updateTitles();
     }
 
-    function windowThreshold(id){
-      const now=Date.now();
-      const map={ '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
-      if (id==='all' || !map[id]) return 0;
+    function windowThreshold(id) {
+      const now = Date.now();
+      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
+      if (id === 'all' || !map[id]) return 0;
       return now - map[id]*60*60*1000;
     }
-    function fmtTs(iso){
-      try { const d=new Date(iso);
-        return d.toLocaleString(undefined,{ day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+
+    function fmtTsISO(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
       } catch { return iso; }
     }
-    function fmtAge(ms){
-      if (!Number.isFinite(ms) || ms<0) return '—';
-      const s=Math.floor(ms/1000);
-      if (s<90) return `${s}s`;
-      const m=Math.floor(s/60);
-      if (m<90) return `${m}m`;
-      const h=Math.floor(m/60);
-      if (h<48) return `${h}h`;
-      const d=Math.floor(h/24);
-      return `${d}g`;
-    }
-    function median(a){ const b=a.slice().sort((x,y)=>x-y); if(!b.length) return null; const i=Math.floor(b.length/2); return (b.length%2)?b[i]:(b[i-1]+b[i])/2; }
-    function estimateCadenceMs(rows){
-      if (!rows || rows.length<3) return null;
-      const deltas=[];
-      for (let i=1;i<rows.length;i++){
-        const dt=Date.parse(rows[i].ts)-Date.parse(rows[i-1].ts);
-        if (dt>0 && dt<36*3600*1000) deltas.push(dt);
-      }
-      const med=median(deltas);
-      return Number.isFinite(med)&&med>0?med:null;
+
+    async function fetchCsv(url, hard=false) {
+      const u = new URL(url);
+      // cache-buster standard + extra quando hard
+      u.searchParams.set('t', String(Date.now()));
+      if (hard) u.searchParams.set('rnd', Math.random().toString(36).slice(2));
+      const res = await fetch(u.toString(), { cache:'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const txt = await res.text();
+      return new Promise((resolve, reject) => {
+        Papa.parse(txt, {
+          header: true,
+          dynamicTyping: false,
+          skipEmptyLines: true,
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
+          error: (err) => reject(err)
+        });
+      });
     }
 
-    function renderChart(canvasId, cfg){
-      const c=document.getElementById(canvasId);
-      if (!c) return;
-      if (CH[canvasId]){ try{ CH[canvasId].destroy(); }catch{} }
-      CH[canvasId]=new Chart(c.getContext('2d'), cfg);
+    function destroyCharts(){
+      Object.values(CH).forEach(ch => { try { ch.destroy(); } catch {} });
+      for (const k of Object.keys(CH)) delete CH[k];
+    }
+
+    function renderChart(canvasId, chartConfig) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      if (CH[canvasId]) { try { CH[canvasId].destroy(); } catch {} }
+      CH[canvasId] = new Chart(canvas.getContext('2d'), chartConfig);
       return CH[canvasId];
     }
-    function buildLineConfig(labels, values, key){
+
+    function buildLineConfig(labels, values, label) {
       return {
-        type:'line',
-        data:{ labels, datasets:[{ label: prettyLabel(key), data: values, borderWidth:2, pointRadius:0, tension:.25, spanGaps:true }]},
-        options:{
-          responsive:true, maintainAspectRatio:false, animation:false,
-          interaction:{ mode:'nearest', intersect:false },
-          scales:{ x:{ ticks:{ autoSkip:true, maxTicksLimit:8 }}, y:{ beginAtZero:false }},
-          plugins:{
-            legend:{ display:false },
-            tooltip:{ callbacks:{ title:ctx=>ctx[0]?.label||'', label:ctx=>`${prettyLabel(key)}: ${ctx.parsed.y}` } }
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data: values,
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            spanGaps: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'nearest', intersect: false },
+          scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 8 } },
+            y: { beginAtZero: false }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: ctx => ctx[0]?.label || '',
+                label: ctx => `${prettyLabel(label)}: ${ctx.parsed.y}`
+              }
+            }
           }
         }
       };
     }
-    function updateTitles(){
+
+    function updateTitles() {
       t1.textContent = sel1.value ? prettyLabel(sel1.value) : 'Grafico 1';
       t2.textContent = sel2.value ? prettyLabel(sel2.value) : 'Grafico 2';
       t3.textContent = sel3.value ? prettyLabel(sel3.value) : 'Grafico 3';
     }
 
-    function filterAndDraw(){
-      if (!ROWS.length) return;
-      const thr=windowThreshold(selWin.value);
-      const rows=(thr>0)?ROWS.filter(r=>Date.parse(r.ts)>=thr):ROWS.slice();
-      const labels=rows.map(r=>fmtTs(r.ts));
+    function filterAndDraw() {
+      if (!ROWS.length) {
+        destroyCharts();
+        t1.textContent = 'Grafico 1';
+        t2.textContent = 'Grafico 2';
+        t3.textContent = 'Grafico 3';
+        countEl.textContent = '';
+        tsRangeEl.textContent = '';
+        return;
+      }
+      const thr = windowThreshold(selWin.value);
+      const rows = (thr>0) ? ROWS.filter(r => Date.parse(r.ts) >= thr) : ROWS.slice();
+      const labels = rows.map(r => fmtTsISO(r.ts));
 
-      const drawOne=(sel, canvasId, metaEl)=>{
-        const key=sel.value; if(!key) return;
-        const vals=rows.map(r=>toNumber(r[key]));
+      const drawOne = (sel, canvasId) => {
+        const key = sel.value;
+        if (!key) return;
+        const vals = rows.map(r => toNumber(r[key]));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
-
-        // meta
-        let lastVal=null, lastTs=null;
-        for (let i=rows.length-1;i>=0;i--){
-          const v=toNumber(rows[i][key]);
-          if (v!=null){ lastVal=v; lastTs=rows[i].ts; break; }
-        }
-        metaEl.textContent = lastTs ? `ultimo campione: ${lastVal} @ ${fmtTs(lastTs)}` : `nessun valore nella finestra`;
       };
 
       updateTitles();
-      drawOne(sel1,'c1',m1meta);
-      drawOne(sel2,'c2',m2meta);
-      drawOne(sel3,'c3',m3meta);
+      drawOne(sel1, 'c1');
+      drawOne(sel2, 'c2');
+      drawOne(sel3, 'c3');
 
       countEl.textContent = `• punti: ${rows.length}`;
-      if (rows.length){
-        tsRangeEl.textContent = `• intervallo: ${fmtTs(rows[0].ts)} → ${fmtTs(rows[rows.length-1].ts)}`;
-      } else tsRangeEl.textContent='';
-
-      buildDiagnostics(rows, thr);
-    }
-
-    function buildDiagnostics(rowsWin, thr){
-      const now=nowMs();
-      const cadenceMs=estimateCadenceMs(ROWS);
-      const staleMs=cadenceMs? cadenceMs*6 : 6*3600*1000;
-      cadenceInfo.textContent = `Cadenza stimata: ${cadenceMs?Math.round(cadenceMs/1000)+'s':'n/d'} • Soglia STALE ≈ ${fmtAge(staleMs)}`;
-
-      const totalWin=rowsWin.length;
-      const items=[];
-      for (const key of METRIC_COLS){
-        let lastWinTs=null, lastWinVal=null, nonNullWin=0;
-        for (let i=0;i<totalWin;i++){
-          const v=toNumber(rowsWin[i][key]); if (v!=null) nonNullWin++;
-        }
-        for (let i=totalWin-1;i>=0;i--){
-          const v=toNumber(rowsWin[i][key]);
-          if (v!=null){ lastWinVal=v; lastWinTs=rowsWin[i].ts; break; }
-        }
-        let lastAllTs=null;
-        for (let i=ROWS.length-1;i>=0;i--){
-          const v=toNumber(ROWS[i][key]);
-          if (v!=null){ lastAllTs=ROWS[i].ts; break; }
-        }
-        const ageMs=lastAllTs? (now - Date.parse(lastAllTs)) : Infinity;
-        const coverage=totalWin? (nonNullWin/totalWin) : 0;
-
-        let status='OK', cls='ok';
-        if (thr>0 && (!lastAllTs || Date.parse(lastAllTs)<thr)){ status='FUORI FINESTRA'; cls='warn'; }
-        else if (ageMs>staleMs){ status='STALE'; cls='bad'; }
-
-        items.push({ key, label: prettyLabel(key), lastWinVal, lastWinTs, lastAllTs, ageMs, coverage, status, cls });
+      if (rows.length) {
+        const a = rows[0].ts, b = rows[rows.length-1].ts;
+        tsRangeEl.textContent = `• intervallo: ${fmtTsISO(a)} → ${fmtTsISO(b)}`;
+      } else {
+        tsRangeEl.textContent = '';
       }
-      items.sort((a,b)=>{ const score=x=>x.cls==='bad'?2:(x.cls==='warn'?1:0); const d=score(b)-score(a); return d!==0?d:(b.ageMs||0)-(a.ageMs||0); });
-
-      diagBody.innerHTML = items.map(it=>{
-        const lastWinTxt = it.lastWinTs? `${it.lastWinVal} @ ${fmtTs(it.lastWinTs)}`:'—';
-        const lastAllTxt = it.lastAllTs? fmtTs(it.lastAllTs):'—';
-        const ageTxt = it.lastAllTs? fmtAge(it.ageMs):'—';
-        const covTxt = `${Math.round(it.coverage*100)}%`;
-        return `<tr>
-          <td>${it.label}</td>
-          <td>${lastWinTxt}</td>
-          <td>${lastAllTxt}</td>
-          <td>${ageTxt}</td>
-          <td>${covTxt}</td>
-          <td class="${it.cls}">${it.status}</td>
-        </tr>`;
-      }).join('');
     }
 
-    // === Modal mapping ===
-    function openMapModal(){
-      buildMapTable();
-      mapModal.style.display='flex';
-    }
-    function closeMapModal(){ mapModal.style.display='none'; }
-
-    function buildMapTable(){
-      const lastRow = RAW_ROWS[RAW_ROWS.length-1] || {};
-      mapTBody.innerHTML = FIELDS.map((name, idx)=>{
-        const example = lastRow[name];
-        const sel = `<select data-col="${name}" class="mapSel">
-          <option value="">— ignora —</option>
-          ${METRICS.map(m=>`<option value="${m}" ${MAP[name]===m?'selected':''}>${prettyLabel(m)}</option>`).join('')}
-        </select>`;
-        const valTxt = (example===undefined||example===null||example==='') ? '—' : String(example);
-        return `<tr>
-          <td>#${idx}</td>
-          <td>${name}</td>
-          <td>${valTxt}</td>
-          <td>${sel}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    function readMapFromModal(){
-      const sels = mapTBody.querySelectorAll('.mapSel');
-      const next = {};
-      sels.forEach(s=>{
-        const col = s.getAttribute('data-col');
-        const v = s.value || '__ignore__';
-        if (v !== '__ignore__') next[col] = v;
-      });
-      MAP = next;
-    }
-
-    function clearMap(){
-      MAP = {};
-      saveMapForUrl(inpSrc.value.trim(), MAP);
-      buildMapTable();
-      showToast('Mappa cancellata.');
-    }
-
-    // Auto-proposta semplice (euristica molto basica)
-    function autoProposeMap(){
-      if (!RAW_ROWS.length) return;
-      const last = RAW_ROWS[RAW_ROWS.length-1] || {};
-      const used = new Set();
-      const next = {};
-
-      function tryAssign(col, metric){
-        if (!metric) return;
-        if (used.has(metric)) return;
-        next[col] = metric; used.add(metric);
-      }
-
-      for (const col of FIELDS){
-        const v = toNumber(last[col]);
-        if (v==null) continue;
-
-        if (v>=900 && v<=1100) { tryAssign(col,'bme_p'); continue; }
-        if (v>=-20 && v<=80)   { if (!used.has('bme_t')) tryAssign(col,'bme_t'); continue; }
-        if (v>=0 && v<=100){
-          // prova a distinguere digitali 0/1
-          let digital=true, seen=0;
-          for (let i=RAW_ROWS.length-1;i>=0 && seen<30;i--){
-            const n=toNumber(RAW_ROWS[i][col]); if (n==null) continue; seen++;
-            if (!(n===0||n===1)) { digital=false; break; }
-          }
-          if (digital){
-            if (!used.has('rain')) { tryAssign(col,'rain'); continue; }
-            if (!used.has('motion')) { tryAssign(col,'motion'); continue; }
-            if (!used.has('valve1')) { tryAssign(col,'valve1'); continue; }
-            if (!used.has('valve2')) { tryAssign(col,'valve2'); continue; }
-          } else {
-            if (!used.has('bme_rh')) { tryAssign(col,'bme_rh'); continue; }
-            if (!used.has('bme_gas_pct')) { tryAssign(col,'bme_gas_pct'); continue; }
-          }
-        }
-        if (v>=300 && v<=5000){ tryAssign(col,'bme_co2eq'); continue; }
-        if (v>10000 && v<10000000){ tryAssign(col,'bme_gas_raw'); continue; }
-        if (v>8 && v<16){ tryAssign(col,'vbat'); continue; }
-        if (v>0 && v<2000){
-          if (!used.has('ppv')) { tryAssign(col,'ppv'); continue; }
-          if (!used.has('vpv')) { tryAssign(col,'vpv'); continue; }
-          if (!used.has('bme_voc')) { tryAssign(col,'bme_voc'); continue; }
-          if (!used.has('flow_lph')) { tryAssign(col,'flow_lph'); continue; }
-        }
-      }
-      MAP = next;
-      buildMapTable();
-      showToast('Mappa proposta automaticamente (controlla a mano).');
-    }
-
-    // Caricamento CSV
-    async function fetchCsv(url){
-      const u=new URL(url); u.searchParams.set('t', String(Date.now()));
-      const res=await fetch(u.toString(), { cache:'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const txt=await res.text();
-      return new Promise((resolve,reject)=>{
-        Papa.parse(txt,{
-          header:true, dynamicTyping:false, skipEmptyLines:true,
-          complete:({ data, meta })=>resolve({ rows:data, fields:meta.fields || [] }),
-          error:err=>reject(err)
-        });
-      });
-    }
-
-    async function refreshAll(){
-      try{
+    async function refreshAll(hard=false) {
+      try {
         setBtnBusy(true);
+        savePrefs();
         const url = inpSrc.value.trim();
         openCsv.href = url;
 
-        const { rows, fields } = await fetchCsv(url);
+        const { rows, fields } = await fetchCsv(url, hard);
         if (!fields?.length) throw new Error('CSV senza header');
-        RAW_ROWS = rows.map(r=>({ ...r })); // copia grezza
-        FIELDS = fields.slice();
 
-        // time column
+        // 1) individua colonna tempo reale
         const tf = detectTimeColumn(fields, rows) || 'ts';
         TIME_COL = tf;
 
-        // normalizza tempi
-        const norm = rows.map(r=>{
-          let ms = parseEpochMaybe(r[tf]);
-          if (!Number.isFinite(ms)){
-            const p=Date.parse(String(r[tf]));
-            if (Number.isFinite(p)) ms=p;
-          }
-          if (!Number.isFinite(ms)) return null;
-          return { ...r, ts:new Date(ms).toISOString() };
-        }).filter(Boolean).sort((a,b)=>Date.parse(a.ts)-Date.parse(b.ts));
+        // 2) normalizza righe (aggiunge ts ISO, ordina)
+        ROWS = normalizeRows(rows, tf);
 
-        // applica mappa (se presente)
-        const currentMap = loadMapForUrl(url) || MAP || {};
-        MAP = currentMap;
+        // 3) header & colonne numeriche
+        HEAD = Array.from(new Set(['ts', ...fields.filter(f => f !== 'ts')]));
+        METRIC_COLS = detectNumericColumns(HEAD, ROWS, 'ts');
 
-        const mapped = applyMapping(norm, fields, MAP);
-        ROWS = mapped;
-
-        // Se la mappa è vuota, usa direttamente i nomi CSV come metriche "provvisorie"
-        if (!Object.keys(MAP).length){
-          ROWS = norm.map(r=>{
-            const o={ ts:r.ts };
-            for (const f of fields){ if (f!==tf) o[f]=r[f]; }
-            return o;
-          });
-        }
-
-        // calcola colonne numeriche disponibili
-        METRIC_COLS = detectNumericColumns(Object.keys(ROWS[0]||{}), ROWS);
-        if (!METRIC_COLS.length) {
-          showToast('Attenzione: nessuna metrica numerica riconosciuta. Apri "Mappa colonne…" e assegna le metriche.');
-        }
-
-        // info header
-        hdrInfo.textContent = `Header: ${FIELDS.length} colonne • time="${tf}"${Object.keys(MAP).length?` • mappa:${Object.keys(MAP).length}`:''}`;
-
+        // 4) popola selects senza toccare preferenze esistenti
         populateMetricSelects();
+
+        // 5) disegna
         filterAndDraw();
 
-      } catch (e){
+        showToast(hard ? 'Dati ricaricati (reset locale + hard refresh).' : 'Dati aggiornati.');
+      } catch (e) {
         console.error(e);
-        showToast('Errore: ' + (e.message || e));
+        showToast('Errore caricamento CSV: ' + (e.message || e));
       } finally {
         setBtnBusy(false);
       }
     }
 
-    // Eventi base
-    document.getElementById('go').addEventListener('click', ()=>{ savePrefs(); refreshAll(); });
-    selWin.addEventListener('change', ()=>{ savePrefs(); filterAndDraw(); });
-    sel1.addEventListener('change', ()=>{ savePrefs(); updateTitles(); filterAndDraw(); });
-    sel2.addEventListener('change', ()=>{ savePrefs(); updateTitles(); filterAndDraw(); });
-    sel3.addEventListener('change', ()=>{ savePrefs(); updateTitles(); filterAndDraw(); });
-    inpSrc.addEventListener('change', ()=>{ MAP = loadMapForUrl(inpSrc.value.trim()) || {}; savePrefs(); });
+    // === RESET DATI (non tocca mappa colonne né preferenze utente) ===
+    function resetData() {
+      // 1) azzera in memoria
+      destroyCharts();
+      ROWS = [];
+      HEAD = [];
+      METRIC_COLS = [];
+      // NON tocchiamo TIME_COL né alcuna chiave custom della "mappa colonne"
+      // NON rimuoviamo LS.m1/m2/m3/win/url
 
-    // Eventi modal
-    mapBtn.addEventListener('click', openMapModal);
-    mapClose.addEventListener('click', closeMapModal);
-    mapClear.addEventListener('click', ()=>{ clearMap(); });
-    mapAuto.addEventListener('click', ()=>{ autoProposeMap(); });
-    mapApply.addEventListener('click', ()=>{
-      readMapFromModal();
-      savePrefs();
-      closeMapModal();
-      refreshAll();
-    });
+      // 2) pulizia UI minima (le select verranno ripopolate dopo il fetch)
+      sel1.innerHTML = '';
+      sel2.innerHTML = '';
+      sel3.innerHTML = '';
+      t1.textContent = 'Grafico 1';
+      t2.textContent = 'Grafico 2';
+      t3.textContent = 'Grafico 3';
+      countEl.textContent = '';
+      tsRangeEl.textContent = '';
 
-    // Avvio
-    (function init(){
-      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
-      inpSrc.value=url;
-      selWin.value = localStorage.getItem(LS.win) || '7d';
-      MAP = loadMapForUrl(url) || {};
-      openCsv.href = url;
-      refreshAll();
-    })();
+      // 3) ricarica dal cloud con cache-buster extra
+      showToast('Dati locali azzerati. Ricarico dal cloud…');
+      refreshAll(true);
+    }
+
+    // === Eventi ===
+    btnGo.addEventListener('click', () => refreshAll(false));
+    btnReset.addEventListener('click', resetData);
+    selWin.addEventListener('change', () => { savePrefs(); filterAndDraw(); });
+    sel1.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    sel2.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    sel3.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
+    inpSrc.addEventListener('change', () => { savePrefs(); });
+
+    // === Avvio ===
+    loadDefaults();
+    openCsv.href = inpSrc.value.trim();
+    refreshAll(false);
   </script>
 </body>
 </html>
