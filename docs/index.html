@@ -152,6 +152,35 @@
     let METRIC_COLS = [];    // solo colonne numeriche
     let TIME_COL = 'ts';     // nome colonna tempo effettiva nel CSV
 
+// --- Unità e validazione ---
+const UNITS = {
+  bme_t: '°C', bme_rh: '%', bme_p: 'hPa',
+  bme_co2eq: 'ppm', bme_voc: 'bVOCe',
+  bme_gas_pct: '%', vbat: 'V', vpv: 'V', ppv: 'W',
+  flow_lph: 'L/h', flow_total: 'L'
+};
+
+function titleFor(key){ return UNITS[key] ? `${key} (${UNITS[key]})` : key; }
+
+function between(x, a, b){
+  return typeof x === 'number' && isFinite(x) && x >= a && x <= b;
+}
+
+// riga "sana" secondo range plausibili dei BME/BSEC
+function isRowSane(r){
+  const ok =
+    between(r.bme_t, -20, 80) &&
+    between(r.bme_rh, 0, 100) &&
+    between(r.bme_p, 850, 1100) &&
+    between(r.bme_iaq, 0, 500) &&
+    between(r.bme_static_iaq, 0, 500) &&
+    between(r.bme_co2eq, 300, 5000) &&
+    between(r.bme_voc, 0, 10) &&
+    between(r.bme_gas_pct, 0, 100);
+  return ok;
+}
+
+    
     function showToast(msg) {
       toast.textContent = msg;
       toast.style.display = 'block';
@@ -350,11 +379,12 @@
       };
     }
 
-    function updateTitles() {
-      t1.textContent = prettyLabel(sel1.value) || 'Grafico 1';
-      t2.textContent = prettyLabel(sel2.value) || 'Grafico 2';
-      t3.textContent = prettyLabel(sel3.value) || 'Grafico 3';
-    }
+function updateTitles() {
+  t1.textContent = sel1.value ? titleFor(sel1.value) : 'Grafico 1';
+  t2.textContent = sel2.value ? titleFor(sel2.value) : 'Grafico 2';
+  t3.textContent = sel3.value ? titleFor(sel3.value) : 'Grafico 3';
+}
+
 
     function filterAndDraw() {
       if (!ROWS.length) return;
@@ -393,28 +423,27 @@
         openCsv.href = url;
 
         const { rows, fields } = await fetchCsv(url);
-        if (!fields?.length) throw new Error('CSV senza header');
+if (!fields?.length) throw new Error('CSV senza header');
 
-        const tf = detectTimeColumn(fields, rows);
-        if (!tf) throw new Error('Colonna tempo non trovata (attese: ' + TIME_CANDS.join(', ') + ')');
-        TIME_COL = tf;
+// normalizza timestamp
+const all = rows.map(r => {
+  if (!r.ts && r.timestamp) r.ts = r.timestamp;
+  return r;
+}).filter(r => r.ts);
 
-        const normalized = normalizeRows(rows, TIME_COL);
-        if (!normalized.length) throw new Error('Nessuna riga con timestamp valido');
-        ROWS = normalized;
+// filtra righe incoerenti (schema rotto)
+const sane = all.filter(isRowSane);
+const dropped = all.length - sane.length;
 
-        METRIC_COLS = detectNumericColumns(fields, ROWS, TIME_COL);
-        if (!METRIC_COLS.length) throw new Error('Nessuna colonna numerica da graficare');
+DATA = sane;
+HEAD = fields.includes('ts') ? fields : ['ts', ...fields.filter(f => f !== 'timestamp')];
 
-        populateMetricSelects();
-        filterAndDraw();
-      } catch (e) {
-        console.error(e);
-        showToast('Errore: ' + (e.message || e));
-      } finally {
-        setBtnBusy(false);
-      }
-    }
+populateMetricSelects();
+filterAndDraw();
+
+if (dropped > 0) {
+  showToast(`Scartate ${dropped} righe anomale (schema incoerente).`);
+}
 
     // === Eventi ===
     btnGo.addEventListener('click', refreshAll);
