@@ -35,6 +35,7 @@
     canvas { width:100% !important; height:260px !important; }
     .foot { margin-top:18px; color:var(--muted); font-size:13px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     a { color:var(--accent); text-decoration:none; }
+    .meta { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; font-size:12px; color:var(--muted); }
     .toast{ position:fixed; right:16px; bottom:16px; background:#1b2246; color:var(--txt); border:1px solid #33407a; padding:10px 12px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
   </style>
 </head>
@@ -85,14 +86,17 @@
         <div class="card">
           <h3 id="t1">Grafico 1</h3>
           <canvas id="c1"></canvas>
+          <div class="meta" id="m1meta"></div>
         </div>
         <div class="card">
           <h3 id="t2">Grafico 2</h3>
           <canvas id="c2"></canvas>
+          <div class="meta" id="m2meta"></div>
         </div>
         <div class="card">
           <h3 id="t3">Grafico 3</h3>
           <canvas id="c3"></canvas>
+          <div class="meta" id="m3meta"></div>
         </div>
       </div>
 
@@ -108,13 +112,30 @@
   <div id="toast" class="toast" style="display:none"></div>
 
   <script>
-    // === Config ===
+    // === Config iniziale ===
     const CSV_URL_DEFAULT =
       'https://raw.githubusercontent.com/samuele9581/esp32-keepalive/main/states/metrics.csv';
+
     const LS = { url:'hist.url', m1:'hist.m1', m2:'hist.m2', m3:'hist.m3', win:'hist.win' };
+
+    // Etichette "umane" opzionali (non usate per il binding, solo display)
+    const LABELS = {
+      bme_t:'BME Temp', bme_rh:'BME UR', bme_p:'BME Press',
+      bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ (statico)', bme_iaq_acc:'BME IAQ acc',
+      bme_co2eq:'BME CO₂eq', bme_voc:'BME bVOCeq', bme_gas_pct:'BME Gas%',
+      bme_gas_raw:'BME Gas Ω', ppv:'PV Watt', vpv:'PV Volt', vbat:'VBAT'
+    };
+    const UNITS = {
+      bme_t:'°C', bme_rh:'%', bme_p:'hPa', bme_co2eq:'ppm', bme_voc:'ppm',
+      bme_gas_pct:'%', ppv:'W', vpv:'V', vbat:'V', flow_lph:'L/h', flow_total:'L'
+    };
+
+    const prettyLabel = k => (LABELS[k] || k) + (UNITS[k] ? ` (${UNITS[k]})` : '');
+
+    // Colonne candidate per il tempo
     const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
 
-    // UI refs
+    // === UI refs ===
     const sel1 = document.getElementById('m1');
     const sel2 = document.getElementById('m2');
     const sel3 = document.getElementById('m3');
@@ -125,27 +146,37 @@
     const t1 = document.getElementById('t1');
     const t2 = document.getElementById('t2');
     const t3 = document.getElementById('t3');
+    const m1meta = document.getElementById('m1meta');
+    const m2meta = document.getElementById('m2meta');
+    const m3meta = document.getElementById('m3meta');
     const countEl = document.getElementById('count');
     const tsRangeEl = document.getElementById('tsRange');
     const toast = document.getElementById('toast');
 
-    // Stato
+    // === State ===
     const CH = {};
-    let ROWS = [];        // righe normalizzate { ts: ISO, ... }
-    let METRIC_COLS = []; // nomi colonne numeriche (tranne ts)
+    let ROWS = [];
+    let METRIC_COLS = [];
+    let TIME_COL = 'ts';
 
-    // Utils UI
     function showToast(msg) {
       toast.textContent = msg;
       toast.style.display = 'block';
       clearTimeout(showToast._t);
       showToast._t = setTimeout(() => toast.style.display = 'none', 3200);
     }
-    function setBtnBusy(b) { btnGo.disabled=b; btnGo.textContent = b ? 'Carico…' : 'Aggiorna'; }
+
+    function setBtnBusy(b) {
+      btnGo.disabled = b;
+      btnGo.textContent = b ? 'Carico…' : 'Aggiorna';
+    }
+
     function loadDefaults() {
-      inpSrc.value = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
+      const url = localStorage.getItem(LS.url) || CSV_URL_DEFAULT;
+      inpSrc.value = url;
       selWin.value = localStorage.getItem(LS.win) || '7d';
     }
+
     function savePrefs() {
       localStorage.setItem(LS.url, inpSrc.value.trim());
       localStorage.setItem(LS.m1, sel1.value || '');
@@ -153,20 +184,7 @@
       localStorage.setItem(LS.m3, sel3.value || '');
       localStorage.setItem(LS.win, selWin.value || '7d');
     }
-    function windowThreshold(id) {
-      const now = Date.now();
-      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
-      if (id === 'all' || !map[id]) return 0;
-      return now - map[id]*60*60*1000;
-    }
-    function fmtTsISO(iso) {
-      try {
-        const d = new Date(iso);
-        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
-      } catch { return iso; }
-    }
 
-    // Parsing helpers
     function toNumber(v) {
       if (v === null || v === undefined) return null;
       if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -175,110 +193,206 @@
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
-    function parseTs(v) {
-      if (v == null) return null;
-      const s = String(v).trim();
-      if (/^\d+$/.test(s)) { // epoch
-        const n = Number(s);
-        if (n > 1e12) return n;      // ms
-        if (n > 1e9)  return n*1000; // s
-      }
-      const p = Date.parse(s);
-      return Number.isFinite(p) ? p : null;
-    }
 
-    // CSV loader
-    async function fetchCsv(url) {
-      const u = new URL(url);
-      u.searchParams.set('t', String(Date.now())); // cache buster
-      const res = await fetch(u.toString(), { cache:'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const txt = await res.text();
-      return new Promise((resolve, reject) => {
-        Papa.parse(txt, {
-          header: true,
-          dynamicTyping: false,   // convertiamo noi
-          skipEmptyLines: true,
-          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
-          error: (err) => reject(err)
-        });
-      });
+    function parseEpochMaybe(v) {
+      const n = toNumber(v);
+      if (n == null) return null;
+      if (n > 1e12) return n;        // ms
+      if (n > 1e9)  return n*1000;   // s
+      if (n > 1e6)  return n*1000;   // s (short)
+      return null;
     }
 
     function detectTimeColumn(fields, sampleRows) {
-      // prova nomi noti
       for (const k of TIME_CANDS) if (fields.includes(k)) return k;
-      // altrimenti trova colonna “parsabile” nel 50% del campione
-      const check = sampleRows.slice(0, 10);
+      const checkRows = sampleRows.slice(0, 10);
       for (const f of fields) {
-        let ok = 0;
-        for (const r of check) { if (Number.isFinite(parseTs(r[f]))) ok++; }
-        if (ok >= Math.ceil(Math.max(1, check.length*0.5))) return f;
+        let score = 0;
+        for (const r of checkRows) {
+          const v = r[f];
+          if (v == null || v === '') continue;
+          if (Number.isFinite(Date.parse(String(v))) || Number.isFinite(parseEpochMaybe(v))) score++;
+        }
+        if (score >= Math.ceil(checkRows.length * 0.5)) return f;
       }
       return null;
     }
 
-    function buildLineConfig(labels, values, key) {
-      return {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [{ label: key, data: values, borderWidth: 2, pointRadius: 0, tension: 0.25, spanGaps: true }]
-        },
-        options: {
-          responsive:true, maintainAspectRatio:false, animation:false,
-          interaction:{ mode:'nearest', intersect:false },
-          scales:{ x:{ ticks:{ autoSkip:true, maxTicksLimit:8 } }, y:{ beginAtZero:false } },
-          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ title:c=>c[0]?.label||'', label:c=>`${key}: ${c.parsed.y}` } } }
+    function normalizeRows(rows, timeField) {
+      const out = [];
+      for (const r of rows) {
+        let ms = parseEpochMaybe(r[timeField]);
+        if (!Number.isFinite(ms)) {
+          const p = Date.parse(String(r[timeField]));
+          if (Number.isFinite(p)) ms = p;
         }
-      };
+        if (!Number.isFinite(ms)) continue;
+        const rr = { ...r, ts: new Date(ms).toISOString() };
+        out.push(rr);
+      }
+      out.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
+      return out;
     }
-    function renderChart(canvasId, cfg) {
-      const canvas = document.getElementById(canvasId);
-      if (!canvas) return;
-      if (CH[canvasId]) { try { CH[canvasId].destroy(); } catch{} }
-      CH[canvasId] = new Chart(canvas.getContext('2d'), cfg);
-      return CH[canvasId];
+
+    function detectNumericColumns(fields, rows, timeField) {
+      const cols = [];
+      for (const f of fields) {
+        if (f === timeField || f === 'ts') continue;
+        let seen = 0, nums = 0;
+        for (const r of rows) {
+          const v = r[f];
+          if (v === '' || v == null) continue;
+          seen++;
+          if (toNumber(v) != null) nums++;
+          if (seen >= 30) break;
+        }
+        if (nums > 0 && nums >= Math.max(3, Math.ceil(seen * 0.5))) cols.push(f);
+      }
+      return cols;
     }
 
     function fillSelect(sel, keys, prefKey, fallbackIndex=0) {
       sel.innerHTML = '';
       keys.forEach(k => {
         const o = document.createElement('option');
-        o.value = k; o.textContent = k;
+        o.value = k; o.textContent = prettyLabel(k);
         sel.appendChild(o);
       });
       const pref = localStorage.getItem(prefKey);
       if (pref && keys.includes(pref)) sel.value = pref;
       else if (keys[fallbackIndex]) sel.value = keys[fallbackIndex];
     }
+
+    function populateMetricSelects() {
+      fillSelect(sel1, METRIC_COLS, LS.m1, 0);
+      fillSelect(sel2, METRIC_COLS, LS.m2, 1);
+      fillSelect(sel3, METRIC_COLS, LS.m3, 2);
+    }
+
+    function windowThreshold(id) {
+      const now = Date.now();
+      const map = { '24h':24, '3d':72, '7d':168, '30d':720, '90d':2160 };
+      if (id === 'all' || !map[id]) return 0;
+      return now - map[id]*60*60*1000;
+    }
+
+    function fmtTs(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      } catch { return iso; }
+    }
+
+    async function fetchCsv(url) {
+      const u = new URL(url);
+      u.searchParams.set('t', String(Date.now())); // evita cache
+      const res = await fetch(u.toString(), { cache:'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const txt = await res.text();
+      return new Promise((resolve, reject) => {
+        Papa.parse(txt, {
+          header: true, dynamicTyping: false, skipEmptyLines: true,
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
+          error: (err) => reject(err)
+        });
+      });
+    }
+
+    function renderChart(canvasId, chartConfig) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      if (CH[canvasId]) { try { CH[canvasId].destroy(); } catch {} }
+      CH[canvasId] = new Chart(canvas.getContext('2d'), chartConfig);
+      return CH[canvasId];
+    }
+
+    function buildLineConfig(labels, values, label) {
+      return {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data: values,
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            spanGaps: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'nearest', intersect: false },
+          scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 8 } },
+            y: { beginAtZero: false }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: ctx => ctx[0]?.label || '',
+                label: ctx => `${prettyLabel(label)}: ${ctx.parsed.y}`
+              }
+            }
+          }
+        }
+      };
+    }
+
     function updateTitles() {
-      t1.textContent = sel1.value || 'Grafico 1';
-      t2.textContent = sel2.value || 'Grafico 2';
-      t3.textContent = sel3.value || 'Grafico 3';
+      t1.textContent = sel1.value ? prettyLabel(sel1.value) : 'Grafico 1';
+      t2.textContent = sel2.value ? prettyLabel(sel2.value) : 'Grafico 2';
+      t3.textContent = sel3.value ? prettyLabel(sel3.value) : 'Grafico 3';
+    }
+
+    function lastNonNullTsFor(key, rows) {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const v = toNumber(rows[i][key]);
+        if (v != null) return rows[i].ts;
+      }
+      return null;
     }
 
     function filterAndDraw() {
       if (!ROWS.length) return;
       const thr = windowThreshold(selWin.value);
       const rows = (thr>0) ? ROWS.filter(r => Date.parse(r.ts) >= thr) : ROWS.slice();
-      const labels = rows.map(r => fmtTsISO(r.ts));
-      const drawOne = (sel, canvasId) => {
+
+      const labels = rows.map(r => fmtTs(r.ts));
+
+      const drawOne = (sel, canvasId, metaEl) => {
         const key = sel.value;
         if (!key) return;
-        const vals = rows.map(r => (typeof r[key] === 'number' ? r[key] : toNumber(r[key])));
+        const vals = rows.map(r => toNumber(r[key]));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
-      };
-      updateTitles();
-      drawOne(sel1, 'c1');
-      drawOne(sel2, 'c2');
-      drawOne(sel3, 'c3');
 
+        // meta: ultimo valore/timestamp non null
+        let lastVal = null, lastTs = null;
+        for (let i=rows.length-1; i>=0; i--){
+          const v = toNumber(rows[i][key]);
+          if (v != null){ lastVal = v; lastTs = rows[i].ts; break; }
+        }
+        metaEl.textContent = (lastTs)
+          ? `ultimo campione: ${lastVal} @ ${fmtTs(lastTs)}`
+          : `nessun valore nella finestra`;
+      };
+
+      updateTitles();
+      drawOne(sel1, 'c1', m1meta);
+      drawOne(sel2, 'c2', m2meta);
+      drawOne(sel3, 'c3', m3meta);
+
+      // footer info
       countEl.textContent = `• punti: ${rows.length}`;
       if (rows.length) {
         const a = rows[0].ts, b = rows[rows.length-1].ts;
-        tsRangeEl.textContent = `• intervallo: ${fmtTsISO(a)} → ${fmtTsISO(b)}`;
-      } else tsRangeEl.textContent = '';
+        tsRangeEl.textContent = `• intervallo: ${fmtTs(a)} → ${fmtTs(b)}`;
+      } else {
+        tsRangeEl.textContent = '';
+      }
     }
 
     async function refreshAll() {
@@ -289,49 +403,33 @@
         openCsv.href = url;
 
         const { rows, fields } = await fetchCsv(url);
-        if (!fields.length) throw new Error('CSV senza header');
+        if (!fields?.length) throw new Error('CSV senza header');
 
-        // trova colonna tempo e normalizza
-        const timeField = detectTimeColumn(fields, rows) || 'ts';
-        const norm = [];
-        for (const r of rows) {
-          const rawTs = r[timeField] ?? r.ts ?? r.timestamp;
-          const p = parseTs(rawTs);
-          if (!Number.isFinite(p)) continue;
-          const iso = new Date(p).toISOString();
-          const rr = { ts: iso };
-          // copia e prova a convertire il resto
-          for (const k of Object.keys(r)) {
-            if (k === timeField) continue;
-            const n = toNumber(r[k]);
-            rr[k] = (n != null) ? n : (r[k] ?? null);
-          }
-          norm.push(rr);
-        }
-        norm.sort((a,b) => Date.parse(a.ts) - Date.parse(b.ts));
+        // 1) individua colonna tempo
+        const tf = detectTimeColumn(fields, rows) || 'ts';
+        TIME_COL = tf;
+
+        // 2) normalizza e ordina per tempo
+        const norm = normalizeRows(rows, tf);
         ROWS = norm;
 
-        // colonne numeriche presenti
-        const keys = new Set();
-        ROWS.forEach(r => Object.keys(r).forEach(k => { if (k !== 'ts') keys.add(k); }));
-        METRIC_COLS = [...keys].filter(k => ROWS.some(r => typeof r[k] === 'number'));
+        // 3) colonne numeriche reali
+        METRIC_COLS = detectNumericColumns(fields, norm, tf);
+        if (!METRIC_COLS.length) throw new Error('Nessuna metrica numerica trovata');
 
-        if (!METRIC_COLS.length) throw new Error('Nessuna colonna numerica trovata');
-
-        fillSelect(sel1, METRIC_COLS, LS.m1, 0);
-        fillSelect(sel2, METRIC_COLS, LS.m2, 1);
-        fillSelect(sel3, METRIC_COLS, LS.m3, 2);
-
+        // 4) popola select e disegna
+        populateMetricSelects();
         filterAndDraw();
+
       } catch (e) {
         console.error(e);
-        showToast('Errore caricamento CSV: ' + (e.message || e));
+        showToast('Errore: ' + (e.message || e));
       } finally {
         setBtnBusy(false);
       }
     }
 
-    // Eventi
+    // === Eventi ===
     btnGo.addEventListener('click', refreshAll);
     selWin.addEventListener('change', () => { savePrefs(); filterAndDraw(); });
     sel1.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
@@ -339,7 +437,7 @@
     sel3.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
     inpSrc.addEventListener('change', () => { savePrefs(); });
 
-    // Avvio
+    // === Avvio ===
     loadDefaults();
     openCsv.href = inpSrc.value.trim();
     refreshAll();
