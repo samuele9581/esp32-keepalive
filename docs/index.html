@@ -11,7 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    :root { --bg:#0f1222; --panel:#171a2e; --txt:#e7e9f7; --muted:#95a0c6; --accent:#7aa2ff; }
+    :root { --bg:#0f1222; --panel:#171a2e; --txt:#e7e9f7; --muted:#95a0c6; --accent:#7aa2ff; --ok:#58d68d; --warn:#f5d76e; --bad:#ff8a8a;}
     * { box-sizing: border-box; }
     html,body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:16px/1.35 system-ui,Segoe UI,Roboto,Helvetica,Arial; }
     header { position:sticky; top:0; z-index:3; background:linear-gradient(180deg, rgba(23,26,46,.98), rgba(23,26,46,.92)); padding:14px 16px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
@@ -30,13 +30,26 @@
     .src input{ width:100%; }
     .row { margin-top:16px; display:grid; grid-template-columns:1fr; gap:14px; }
     @media (min-width:900px){ .row { grid-template-columns:1fr 1fr 1fr; } }
-    .card { background:#0f1230; border:1px solid #2a2f55; border-radius:14px; padding:12px; height:320px; }
+    .card { background:#0f1230; border:1px solid #2a2f55; border-radius:14px; padding:12px; }
     .card h3{ margin:0 0 8px; font-size:14px; color:var(--muted); font-weight:600; }
     canvas { width:100% !important; height:260px !important; }
+
     .foot { margin-top:18px; color:var(--muted); font-size:13px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     a { color:var(--accent); text-decoration:none; }
     .meta { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; font-size:12px; color:var(--muted); }
     .toast{ position:fixed; right:16px; bottom:16px; background:#1b2246; color:var(--txt); border:1px solid #33407a; padding:10px 12px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,.35); }
+
+    /* Diagnostica */
+    .diag { margin-top:18px; }
+    .diag h2 { margin:6px 0 10px; font-size:16px; color:var(--muted); }
+    table { width:100%; border-collapse: collapse; background:#0f1230; border:1px solid #2a2f55; border-radius:12px; overflow:hidden; }
+    thead th { text-align:left; font-size:12px; color:var(--muted); padding:10px; background:#11153a; }
+    tbody td { padding:10px; border-top:1px solid #232a55; font-size:13px; }
+    tbody tr:hover { background:#0e1333; }
+    .ok { color:var(--ok); font-weight:600; }
+    .warn { color:var(--warn); font-weight:600; }
+    .bad { color:var(--bad); font-weight:700; }
+    .legend { margin-top:8px; font-size:12px; color:var(--muted); display:flex; gap:18px; flex-wrap:wrap; }
   </style>
 </head>
 <body>
@@ -100,6 +113,32 @@
         </div>
       </div>
 
+      <!-- DIAGNOSTICA -->
+      <div class="diag">
+        <h2>Diagnostica (mismatch metriche)</h2>
+        <div id="cadenceInfo" class="legend"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Metrica</th>
+              <th>Ultimo (finestra)</th>
+              <th>Ultimo globale</th>
+              <th>Età ultimo</th>
+              <th>Copertura finestra</th>
+              <th>Stato</th>
+            </tr>
+          </thead>
+          <tbody id="diagBody">
+            <!-- riempito via JS -->
+          </tbody>
+        </table>
+        <div class="legend">
+          <span><b>OK</b>: aggiornamenti regolari</span>
+          <span><b class="warn">FUORI FINESTRA</b>: nessun dato recente nella finestra scelta</span>
+          <span><b class="bad">STALE</b>: ultimo dato troppo vecchio rispetto alla cadenza</span>
+        </div>
+      </div>
+
       <div class="foot">
         <span>CSV:</span>
         <a id="openCsv" target="_blank" rel="noopener">Apri file</a>
@@ -118,7 +157,7 @@
 
     const LS = { url:'hist.url', m1:'hist.m1', m2:'hist.m2', m3:'hist.m3', win:'hist.win' };
 
-    // Etichette "umane" opzionali (non usate per il binding, solo display)
+    // Etichette opzionali
     const LABELS = {
       bme_t:'BME Temp', bme_rh:'BME UR', bme_p:'BME Press',
       bme_iaq:'BME IAQ', bme_static_iaq:'BME IAQ (statico)', bme_iaq_acc:'BME IAQ acc',
@@ -129,13 +168,11 @@
       bme_t:'°C', bme_rh:'%', bme_p:'hPa', bme_co2eq:'ppm', bme_voc:'ppm',
       bme_gas_pct:'%', ppv:'W', vpv:'V', vbat:'V', flow_lph:'L/h', flow_total:'L'
     };
-
     const prettyLabel = k => (LABELS[k] || k) + (UNITS[k] ? ` (${UNITS[k]})` : '');
 
-    // Colonne candidate per il tempo
     const TIME_CANDS = ['ts','timestamp','time','date','datetime','epoch','epochtime','unix'];
 
-    // === UI refs ===
+    // UI refs
     const sel1 = document.getElementById('m1');
     const sel2 = document.getElementById('m2');
     const sel3 = document.getElementById('m3');
@@ -152,8 +189,10 @@
     const countEl = document.getElementById('count');
     const tsRangeEl = document.getElementById('tsRange');
     const toast = document.getElementById('toast');
+    const diagBody = document.getElementById('diagBody');
+    const cadenceInfo = document.getElementById('cadenceInfo');
 
-    // === State ===
+    // State
     const CH = {};
     let ROWS = [];
     let METRIC_COLS = [];
@@ -283,19 +322,34 @@
       } catch { return iso; }
     }
 
-    async function fetchCsv(url) {
-      const u = new URL(url);
-      u.searchParams.set('t', String(Date.now())); // evita cache
-      const res = await fetch(u.toString(), { cache:'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const txt = await res.text();
-      return new Promise((resolve, reject) => {
-        Papa.parse(txt, {
-          header: true, dynamicTyping: false, skipEmptyLines: true,
-          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
-          error: (err) => reject(err)
-        });
-      });
+    function fmtAge(ms){
+      if (!Number.isFinite(ms) || ms < 0) return '—';
+      const s = Math.floor(ms/1000);
+      if (s < 90) return `${s}s`;
+      const m = Math.floor(s/60);
+      if (m < 90) return `${m}m`;
+      const h = Math.floor(m/60);
+      if (h < 48) return `${h}h`;
+      const d = Math.floor(h/24);
+      return `${d}g`;
+    }
+
+    function median(arr){
+      const a = arr.slice().sort((x,y)=>x-y);
+      if (!a.length) return null;
+      const i = Math.floor(a.length/2);
+      return (a.length % 2) ? a[i] : (a[i-1]+a[i])/2;
+    }
+
+    function estimateCadenceMs(rows){
+      if (!rows || rows.length < 3) return null;
+      const deltas = [];
+      for (let i=1;i<rows.length;i++){
+        const dt = Date.parse(rows[i].ts) - Date.parse(rows[i-1].ts);
+        if (dt>0 && dt < 36*3600*1000) deltas.push(dt); // scarta outlier >36h
+      }
+      const med = median(deltas);
+      return Number.isFinite(med) && med>0 ? med : null;
     }
 
     function renderChart(canvasId, chartConfig) {
@@ -348,19 +402,10 @@
       t3.textContent = sel3.value ? prettyLabel(sel3.value) : 'Grafico 3';
     }
 
-    function lastNonNullTsFor(key, rows) {
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const v = toNumber(rows[i][key]);
-        if (v != null) return rows[i].ts;
-      }
-      return null;
-    }
-
     function filterAndDraw() {
       if (!ROWS.length) return;
       const thr = windowThreshold(selWin.value);
       const rows = (thr>0) ? ROWS.filter(r => Date.parse(r.ts) >= thr) : ROWS.slice();
-
       const labels = rows.map(r => fmtTs(r.ts));
 
       const drawOne = (sel, canvasId, metaEl) => {
@@ -369,7 +414,6 @@
         const vals = rows.map(r => toNumber(r[key]));
         renderChart(canvasId, buildLineConfig(labels, vals, key));
 
-        // meta: ultimo valore/timestamp non null
         let lastVal = null, lastTs = null;
         for (let i=rows.length-1; i>=0; i--){
           const v = toNumber(rows[i][key]);
@@ -393,6 +437,100 @@
       } else {
         tsRangeEl.textContent = '';
       }
+
+      // diagnostica
+      buildDiagnostics(rows, thr);
+    }
+
+    function buildDiagnostics(rowsWin, thr){
+      const now = Date.now();
+      const cadenceMs = estimateCadenceMs(ROWS);
+      const staleMs = cadenceMs ? cadenceMs * 6 : 6*3600*1000; // fallback 6h
+      cadenceInfo.textContent =
+        `Cadenza stimata: ${cadenceMs ? Math.round(cadenceMs/1000) + 's' : 'n/d'} • Soglia STALE ≈ ${fmtAge(staleMs)}`;
+
+      const totalWin = rowsWin.length;
+      const items = [];
+
+      for (const key of METRIC_COLS){
+        // ultimo nella finestra
+        let lastWinTs = null, lastWinVal = null, nonNullWin = 0;
+        for (let i=0;i<totalWin;i++){
+          const v = toNumber(rowsWin[i][key]);
+          if (v != null) nonNullWin++;
+        }
+        for (let i=totalWin-1;i>=0;i--){
+          const v = toNumber(rowsWin[i][key]);
+          if (v != null){ lastWinVal = v; lastWinTs = rowsWin[i].ts; break; }
+        }
+
+        // ultimo globale
+        let lastAllTs = null;
+        for (let i=ROWS.length-1;i>=0;i--){
+          const v = toNumber(ROWS[i][key]);
+          if (v != null){ lastAllTs = ROWS[i].ts; break; }
+        }
+
+        const ageMs = lastAllTs ? (now - Date.parse(lastAllTs)) : Infinity;
+        const coverage = totalWin ? (nonNullWin/totalWin) : 0;
+
+        let status = 'OK', cls = 'ok';
+        // se abbiamo una finestra attiva (thr>0) e ultimo dato globale è più vecchio della finestra:
+        if (thr>0 && (!lastAllTs || Date.parse(lastAllTs) < thr)) {
+          status = 'FUORI FINESTRA'; cls = 'warn';
+        } else if (ageMs > staleMs) {
+          status = 'STALE'; cls = 'bad';
+        }
+
+        items.push({
+          key, label: prettyLabel(key),
+          lastWinVal, lastWinTs,
+          lastAllTs,
+          ageMs, coverage, status, cls
+        });
+      }
+
+      // ordina mettendo prima gli "peggiori"
+      items.sort((a,b)=>{
+        const score = (x)=> (x.cls==='bad'?2:(x.cls==='warn'?1:0));
+        const d = score(b)-score(a);
+        if (d!==0) return d;
+        // a parità ordina per età desc
+        return (b.ageMs||0) - (a.ageMs||0);
+      });
+
+      // render tabella
+      diagBody.innerHTML = items.map(it=>{
+        const lastWinTxt = it.lastWinTs ? `${it.lastWinVal} @ ${fmtTs(it.lastWinTs)}` : '—';
+        const lastAllTxt = it.lastAllTs ? fmtTs(it.lastAllTs) : '—';
+        const ageTxt = it.lastAllTs ? fmtAge(it.ageMs) : '—';
+        const covTxt = `${Math.round(it.coverage*100)}%`;
+        return `
+          <tr>
+            <td>${it.label}</td>
+            <td>${lastWinTxt}</td>
+            <td>${lastAllTxt}</td>
+            <td>${ageTxt}</td>
+            <td>${covTxt}</td>
+            <td class="${it.cls}">${it.status}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function fetchCsv(url) {
+      const u = new URL(url);
+      u.searchParams.set('t', String(Date.now()));
+      const res = await fetch(u.toString(), { cache:'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const txt = await res.text();
+      return new Promise((resolve, reject) => {
+        Papa.parse(txt, {
+          header: true, dynamicTyping: false, skipEmptyLines: true,
+          complete: ({ data, meta }) => resolve({ rows: data, fields: meta.fields || [] }),
+          error: (err) => reject(err)
+        });
+      });
     }
 
     async function refreshAll() {
@@ -405,19 +543,15 @@
         const { rows, fields } = await fetchCsv(url);
         if (!fields?.length) throw new Error('CSV senza header');
 
-        // 1) individua colonna tempo
         const tf = detectTimeColumn(fields, rows) || 'ts';
         TIME_COL = tf;
 
-        // 2) normalizza e ordina per tempo
         const norm = normalizeRows(rows, tf);
         ROWS = norm;
 
-        // 3) colonne numeriche reali
         METRIC_COLS = detectNumericColumns(fields, norm, tf);
         if (!METRIC_COLS.length) throw new Error('Nessuna metrica numerica trovata');
 
-        // 4) popola select e disegna
         populateMetricSelects();
         filterAndDraw();
 
@@ -429,7 +563,7 @@
       }
     }
 
-    // === Eventi ===
+    // Eventi
     btnGo.addEventListener('click', refreshAll);
     selWin.addEventListener('change', () => { savePrefs(); filterAndDraw(); });
     sel1.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
@@ -437,7 +571,7 @@
     sel3.addEventListener('change', () => { savePrefs(); updateTitles(); filterAndDraw(); });
     inpSrc.addEventListener('change', () => { savePrefs(); });
 
-    // === Avvio ===
+    // Avvio
     loadDefaults();
     openCsv.href = inpSrc.value.trim();
     refreshAll();
