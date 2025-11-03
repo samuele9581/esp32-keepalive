@@ -8,12 +8,17 @@ on:
 permissions:
   contents: write
 
+# 👉 forza bash per TUTTI gli step
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: collect-esp32
   cancel-in-progress: false
 
 env:
-  BASE_URL: ${{ secrets.PORTAL_BASE }}
+  BASE_URL: ${{ secrets.PORTAL_BASE }}   # metti qui il nuovo trycloudflare
   PORTAL_AUTH: ${{ secrets.PORTAL_AUTH }}
 
 jobs:
@@ -22,20 +27,33 @@ jobs:
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y curl jq
+
+      - name: Install curl & jq (verify)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y curl jq ca-certificates
+          command -v curl
+          /usr/bin/curl --version
+          command -v jq
 
       - name: Probe API
         id: probe
         run: |
-          set -e
+          set -euo pipefail
           BASE="${BASE_URL%/}"
           AUTH="${PORTAL_AUTH:-}"
           AUTH_ARGS=()
-          [ -n "$AUTH" ] && AUTH_ARGS=(-u "$AUTH")
+          [[ -n "$AUTH" ]] && AUTH_ARGS=(-u "$AUTH")
           for PATH in /api/ping /api/state; do
-            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 4 --max-time 8 "${AUTH_ARGS[@]}" "$BASE$PATH" || echo 000)
+            CODE=$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' \
+                   --connect-timeout 4 --max-time 8 "${AUTH_ARGS[@]}" "$BASE$PATH" \
+                   || echo 000)
             echo "$PATH -> HTTP $CODE"
-            [ "$CODE" = "200" ] && echo "OK=1" >> $GITHUB_OUTPUT && exit 0
+            if [[ "$CODE" == "200" ]]; then
+              echo "OK=1" >> $GITHUB_OUTPUT
+              exit 0
+            fi
           done
           exit 1
 
@@ -43,7 +61,7 @@ jobs:
         if: ${{ steps.probe.outputs.OK == '1' }}
         run: |
           mkdir -p states/raw docs
-          [ -s states/metrics.csv ] || echo "timestamp,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > states/metrics.csv
+          [[ -s states/metrics.csv ]] || echo "timestamp,soil1,soil2,sens_suolo_anal1,sens_suolo_anal2,t_air_ds,t_soil_ds,bme_t,bme_rh,bme_p,bme_iaq,bme_static_iaq,bme_co2eq,bme_voc,bme_gas_pct,bme_gas_raw,vbat,vpv,ppv,flow_lph,flow_total,valve1,valve2,rtc_epoch_esp32" > states/metrics.csv
 
       - name: Fetch /api/state and append row
         if: ${{ steps.probe.outputs.OK == '1' }}
@@ -52,9 +70,9 @@ jobs:
           BASE="${BASE_URL%/}"
           AUTH="${PORTAL_AUTH:-}"
           AUTH_ARGS=()
-          [ -n "$AUTH" ] && AUTH_ARGS=(-u "$AUTH")
+          [[ -n "$AUTH" ]] && AUTH_ARGS=(-u "$AUTH")
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          curl -fsS --connect-timeout 5 --max-time 12 --retry 2 --retry-delay 1 \
+          /usr/bin/curl -fsS --connect-timeout 5 --max-time 12 --retry 2 --retry-delay 1 \
                "${AUTH_ARGS[@]}" "$BASE/api/state" -o "states/raw/$ts.json"
           jq -r --arg ts "$ts" '
             [$ts, (.soil1//0),(.soil2//0),(.sens_suolo_anal1//0),(.sens_suolo_anal2//0),
