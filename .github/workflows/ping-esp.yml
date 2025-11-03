@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       override_base:
-        description: "Override base URL (es: http://79.21.55.245:1234)"
+        description: "Override base URL (es: https://back-mysterious-chemistry-drives.trycloudflare.com/)"
         required: false
         default: ""
   schedule:
