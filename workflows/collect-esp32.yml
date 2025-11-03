@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BASE_URL: "http://79.21.55.245:1234"   # eventualmente sostituisci con il tuo dominio/DDNS
+  BASE_URL: "https://back-mysterious-chemistry-drives.trycloudflare.com/"   # eventualmente sostituisci con il tuo dominio/DDNS
 
 jobs:
   pull:
