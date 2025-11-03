@@ -2,7 +2,7 @@ name: Collect ESP32 state
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # ogni 10 minuti
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # <<< Cambia qui se serve. NIENTE "/" finale.
+  # NIENTE slash finale. Cambia qui il tuo endpoint.
   BASE_URL: "https://back-mysterious-chemistry-drives.trycloudflare.com"
-  # Se usi Basic Auth, crea il secret PORTAL_AUTH con "user:pass"
+  # Se usi Basic Auth crea un secret PORTAL_AUTH con "user:pass"
   PORTAL_AUTH: ${{ secrets.PORTAL_AUTH }}
 
 jobs:
@@ -33,24 +33,42 @@ jobs:
           /usr/bin/curl --version
           jq --version
 
+      - name: Sanity check & normalize BASE_URL
+        id: norm
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Debug: stampa grezza + lunghezza + esadecimale (per scovare CR/LF invisibili)
+          echo "RAW BASE_URL: >>>${BASE_URL}<<<"
+          echo "RAW length: $(printf '%s' "${BASE_URL}" | wc -c)"
+          printf 'RAW hex: ' ; printf '%s' "${BASE_URL}" | od -An -tx1
+
+          # Normalizza: rimuovi CR, spazi esterni e trailing slash
+          BASE_NORM="$(printf '%s' "${BASE_URL}" | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | sed -E 's@/*$@@')"
+          echo "NORM BASE_URL: >>>${BASE_NORM}<<<"
+          echo "NORM length: $(printf '%s' "${BASE_NORM}" | wc -c)"
+
+          # Valida formato di base (http/https + host)
+          if [[ ! "${BASE_NORM}" =~ ^https?://[^/[:space:]]+(:[0-9]+)?$ ]]; then
+            echo "::error::BASE_URL non valido: '${BASE_NORM}'. Atteso es: https://dominio.tld[:porta]"
+            exit 1
+          fi
+
+          # Esporta per gli step successivi
+          echo "BASE=${BASE_NORM}" >> "$GITHUB_ENV"
+
       - name: Probe API (ping + state)
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${BASE_URL:-}" ]]; then
-            echo "::error::BASE_URL è vuoto."
-            exit 1
-          fi
-          BASE="${BASE_URL%/}"
-          AUTH="${PORTAL_AUTH:-}"
+          echo "Using BASE=${BASE}"
           AUTH_ARGS=()
-          [[ -n "$AUTH" ]] && AUTH_ARGS=(-u "$AUTH")
-
+          [[ -n "${PORTAL_AUTH:-}" ]] && AUTH_ARGS=(-u "${PORTAL_AUTH}")
           ok=0
           for path in /api/ping /api/state; do
             code=$(/usr/bin/curl -sS -o /dev/null -w '%{http_code}' \
-                  --connect-timeout 5 --max-time 10 "${AUTH_ARGS[@]}" "$BASE$path" || echo 000)
-            echo "$path -> HTTP $code"
+                  --connect-timeout 5 --max-time 10 "${AUTH_ARGS[@]}" "${BASE}${path}" || echo 000)
+            echo "${BASE}${path} -> HTTP $code"
             [[ "$code" == "200" ]] && ok=1 || true
           done
           [[ "$ok" == 1 ]]
@@ -69,16 +87,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="${BASE_URL%/}"
-          AUTH="${PORTAL_AUTH:-}"
           AUTH_ARGS=()
-          [[ -n "$AUTH" ]] && AUTH_ARGS=(-u "$AUTH")
+          [[ -n "${PORTAL_AUTH:-}" ]] && AUTH_ARGS=(-u "${PORTAL_AUTH}")
 
           ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          # salva il raw
-          /usr/bin/curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/state" -o "states/raw/$ts.json"
+          /usr/bin/curl -fsS "${AUTH_ARGS[@]}" "${BASE}/api/state" -o "states/raw/$ts.json"
 
-          # estrai e appendi al CSV
           jq -r --arg ts "$ts" '
             [
               $ts,
@@ -119,7 +133,6 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add states docs
-            # rebase leggero per evitare conflitti tra run
             git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
             git commit -m "metrics: $(date -u +%FT%TZ)" || true
             git push origin HEAD:"${GITHUB_REF_NAME}"
