@@ -14,7 +14,7 @@ concurrency:
 
 env:
   # NIENTE slash finale. Cambia qui il tuo endpoint.
-  BASE_URL: "https://back-mysterious-chemistry-drives.trycloudflare.com"
+  BASE_URL: "https://desktop-sctvi5m.taild52024.ts.net/"
   # Se usi Basic Auth crea un secret PORTAL_AUTH con "user:pass"
   PORTAL_AUTH: ${{ secrets.PORTAL_AUTH }}
 
