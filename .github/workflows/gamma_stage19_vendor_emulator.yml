@@ -1,0 +1,32 @@
+name: GAMMA Stage19 Vendor Emulator
+
+on:
+  push:
+    branches:
+      - gamma-stage19-vendor-aer-20260722
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  emulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: gamma_stage19/requirements.txt
+      - name: Install dependencies
+        run: pip install -r gamma_stage19/requirements.txt
+      - name: Run IBM vendor-derived calibrated-noise emulation
+        run: python gamma_stage19/run_ibm_vendor_derived_emulator.py
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamma-stage19-ibm-fake-torino-result
+          path: gamma_stage19/results/
+          if-no-files-found: error
