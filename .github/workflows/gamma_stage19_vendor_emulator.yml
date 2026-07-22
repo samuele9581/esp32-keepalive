@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - gamma-stage19-vendor-aer-20260722
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
